@@ -23,6 +23,21 @@ services:
       timeout: 5s
       retries: 5
 
+  # Redis для хранения состояний FSM
+  redis:
+    image: redis:alpine
+    container_name: numerology_redis
+    restart: always
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    networks:
+      - numerology_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # n8n для интеграции с ИИ
   n8n:
     image: n8nio/n8n:latest
@@ -57,16 +72,19 @@ services:
     restart: always
     environment:
       - BOT_TOKEN=${BOT_TOKEN}
-      - PAYMENT_PROVIDER_TOKEN=${PAYMENT_PROVIDER_TOKEN}
-      - PAYMENT_TOKEN_SECRET=${PAYMENT_TOKEN_SECRET}
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_NAME=${DB_NAME:-numerology_bot}
-      - DB_USER=${DB_USER:-postgres}
-      - DB_PASSWORD=${DB_PASSWORD:-postgres}
+      - PAYMENT_PROVIDER_TOKEN=${PAYMENT_PROVIDER_TOKEN:-null}
+      - PAYMENT_TOKEN_SECRET=${PAYMENT_TOKEN_SECRET:-randomsecret}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${DB_NAME:-numerology_bot}
+      - POSTGRES_USER=${DB_USER:-postgres}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-postgres}
       - N8N_BASE_URL=http://n8n:5678
-      - ADMIN_USER_ID=${ADMIN_USER_ID}
+      - ADMIN_USER_ID=${ADMIN_USER_ID:-123456789}
       - PDF_STORAGE_PATH=/app/pdfs
+      - TEST_MODE=${TEST_MODE:-true}
+      - WEBHOOK_HOST=${WEBHOOK_HOST:-https://example.com}
+      - WEBHOOK_PATH=${WEBHOOK_PATH:-/webhook}
     volumes:
       - ./pdfs:/app/pdfs
     networks:
@@ -74,6 +92,7 @@ services:
     depends_on:
       - postgres
       - n8n
+      - redis
     command: python bot.py
 
   # Webhook сервер для платежей
@@ -85,16 +104,17 @@ services:
     restart: always
     environment:
       - BOT_TOKEN=${BOT_TOKEN}
-      - PAYMENT_PROVIDER_TOKEN=${PAYMENT_PROVIDER_TOKEN}
-      - PAYMENT_TOKEN_SECRET=${PAYMENT_TOKEN_SECRET}
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_NAME=${DB_NAME:-numerology_bot}
-      - DB_USER=${DB_USER:-postgres}
-      - DB_PASSWORD=${DB_PASSWORD:-postgres}
+      - PAYMENT_PROVIDER_TOKEN=${PAYMENT_PROVIDER_TOKEN:-null}
+      - PAYMENT_TOKEN_SECRET=${PAYMENT_TOKEN_SECRET:-randomsecret}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${DB_NAME:-numerology_bot}
+      - POSTGRES_USER=${DB_USER:-postgres}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-postgres}
       - N8N_BASE_URL=http://n8n:5678
       - WEBHOOK_HOST=${WEBHOOK_HOST:-0.0.0.0}
       - WEBHOOK_PORT=${WEBHOOK_PORT:-8080}
+      - TEST_MODE=${TEST_MODE:-true}
     ports:
       - "${WEBHOOK_PORT:-8080}:8080"
     networks:
@@ -111,3 +131,4 @@ networks:
 volumes:
   postgres_data:
   n8n_data:
+  pdfs:

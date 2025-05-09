@@ -16,6 +16,7 @@
 - **Python 3.10+** - основной язык программирования
 - **aiogram 3.x** - фреймворк для создания Telegram ботов
 - **PostgreSQL** - база данных для хранения информации о пользователях и заказах
+- **Redis** - для хранения состояний конечного автомата (FSM)
 - **n8n** - для интеграции с API искусственного интеллекта
 - **Docker** - для контейнеризации и развертывания
 - **weasyprint** - для генерации PDF-отчетов
@@ -29,22 +30,18 @@
 ├── database.py           # Модуль работы с базой данных
 ├── interpret.py          # Модуль для интеграции с n8n и ИИ
 ├── payment_webhook.py    # Обработчик вебхуков платежей
+├── pdf_generator.py      # Модуль для генерации PDF-отчетов
 ├── pdf_template.html     # HTML-шаблон для генерации PDF
 ├── requirements.txt      # Зависимости проекта
-├── docker-compose.yml    # Конфигурация Docker
+├── schema.sql            # Схема базы данных
+├── dockerfile            # Инструкции для сборки Docker-образа
+├── docker-compose.yml    # Конфигурация Docker-композиции
 └── README.md             # Документация проекта
 ```
 
 ## Установка и запуск
 
-### Требования
-
-- Python 3.10 или выше
-- PostgreSQL
-- n8n
-- Docker и docker-compose (опционально)
-
-### Установка вручную
+### Запуск с Docker в тестовом режиме
 
 1. Клонируйте репозиторий:
    ```bash
@@ -52,53 +49,14 @@
    cd numerology-bot
    ```
 
-2. Создайте виртуальное окружение и установите зависимости:
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # Для Linux/Mac
-   # или
-   venv\Scripts\activate  # Для Windows
-   
-   pip install -r requirements.txt
-   ```
-
-3. Создайте файл `.env` с необходимыми переменными окружения:
+2. Создайте файл `.env` с необходимыми переменными окружения:
    ```
    # Telegram Bot
    BOT_TOKEN=your_bot_token_here
-   PAYMENT_PROVIDER_TOKEN=your_payment_provider_token_here
-   PAYMENT_TOKEN_SECRET=your_payment_secret_here
    
-   # PostgreSQL
-   DB_HOST=localhost
-   DB_PORT=5432
-   DB_NAME=numerology_bot
-   DB_USER=postgres
-   DB_PASSWORD=your_password
-   
-   # n8n
-   N8N_BASE_URL=http://localhost:5678
-   
-   # Другие настройки
-   ADMIN_USER_ID=your_telegram_id
-   PDF_STORAGE_PATH=./pdfs
+   # Тестовый режим (без реальных платежей)
+   TEST_MODE=true
    ```
-
-4. Создайте необходимые таблицы в базе данных:
-   ```bash
-   psql -U postgres -d numerology_bot -f schema.sql
-   ```
-
-5. Запустите бота:
-   ```bash
-   python bot.py
-   ```
-
-### Запуск с Docker
-
-1. Убедитесь, что Docker и docker-compose установлены в вашей системе.
-
-2. Создайте файл `.env` как описано выше.
 
 3. Запустите контейнеры:
    ```bash
@@ -108,6 +66,34 @@
 4. Проверьте логи:
    ```bash
    docker-compose logs -f bot
+   ```
+
+В тестовом режиме (`TEST_MODE=true`) бот будет работать без реальных платежей, предоставляя возможность тестировать все функции бесплатно.
+
+### Настройка для продакшн
+
+Для запуска в продакшн режиме с реальными платежами:
+
+1. Получите платежный токен от BotFather через команду `/mybots` -> Ваш бот -> Payments
+
+2. Обновите `.env` файл:
+   ```
+   # Telegram Bot
+   BOT_TOKEN=your_bot_token_here
+   PAYMENT_PROVIDER_TOKEN=your_payment_provider_token_here
+   PAYMENT_TOKEN_SECRET=your_payment_secret_here
+   
+   # Деактивация тестового режима
+   TEST_MODE=false
+   
+   # Вебхук для продакшна
+   WEBHOOK_HOST=https://your-domain.com
+   ```
+
+3. Перезапустите контейнеры:
+   ```bash
+   docker-compose down
+   docker-compose up -d
    ```
 
 ## Настройка n8n для ИИ-интеграции
@@ -120,10 +106,20 @@
    - `numerology-compatibility` - для обработки расчетов совместимости
    - `weekly-forecast` - для еженедельных прогнозов
 
-3. Настройте для каждого процесса:
-   - HTTP Webhook для получения данных от бота
-   - Интеграцию с API ИИ (OpenAI, Claude и т.д.)
-   - HTTP Response для возврата результатов боту
+3. Настройте каждый процесс для интеграции с AI (OpenAI, Claude и т.д.)
+
+### Пример настройки n8n для интеграции с OpenAI
+
+1. Создайте новый workflow и назовите его `numerology-mini-report`
+2. Добавьте узел `Webhook`
+3. Настройте его как POST метод и скопируйте сгенерированный URL
+4. Добавьте узел `OpenAI`
+5. Настройте его для использования Chat Completion API
+6. Подготовьте промпт для обработки нумерологических данных
+7. Настройте выход для формирования JSON-ответа с интерпретацией
+8. Сохраните и активируйте workflow
+
+В тестовом режиме интеграция с n8n не требуется - бот будет генерировать тестовые ответы автоматически.
 
 ## Команды бота
 
@@ -133,6 +129,14 @@
 - `/compatibility` - Расчет совместимости с другим человеком
 - `/help` - Справка и информация о боте
 - `/settings` - Настройки языка и уведомлений
+
+## Разработка и тестирование
+
+Для разработки и тестирования новых функций рекомендуется использовать тестовый режим:
+
+1. Установите `TEST_MODE=true` в файле `.env`
+2. При запуске бот будет предоставлять тестовые кнопки для получения платного контента бесплатно
+3. Модуль `interpret.py` будет генерировать тестовые ответы вместо реальных запросов к n8n
 
 ## Лицензия
 

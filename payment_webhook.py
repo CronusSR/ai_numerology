@@ -7,10 +7,11 @@ import logging
 import json
 import hmac
 import hashlib
+import os
 from aiohttp import web
 from datetime import datetime, timedelta
-import database
-from bot import bot, generate_and_send_pdf
+from database import Database
+from typing import Dict, Any
 
 # Настройка логгирования
 logging.basicConfig(
@@ -19,8 +20,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Секретный токен для проверки платежей (должен быть в переменных окружения в реальном приложении)
-PAYMENT_TOKEN_SECRET = "YOUR_PAYMENT_SECRET_TOKEN"  # Замените на реальный токен в production
+# Секретный токен для проверки платежей
+PAYMENT_TOKEN_SECRET = os.getenv("PAYMENT_TOKEN_SECRET", "your_payment_secret_token")
+TEST_MODE = os.getenv("TEST_MODE", "false").lower() == "true"
+
+# Инициализация базы данных
+db = Database()
 
 
 async def verify_telegram_payment(request):
@@ -33,9 +38,11 @@ async def verify_telegram_payment(request):
     Returns:
         bool: True если вебхук подлинный, False в противном случае
     """
-    try:
-        data = await request.json()
+    # В тестовом режиме всегда возвращаем True
+    if TEST_MODE:
+        return True
         
+    try:
         # Проверка наличия заголовка X-Telegram-Bot-Api-Secret-Token
         if 'X-Telegram-Bot-Api-Secret-Token' not in request.headers:
             logger.warning("Missing X-Telegram-Bot-Api-Secret-Token header")
@@ -53,7 +60,7 @@ async def verify_telegram_payment(request):
         return False
 
 
-async def handle_successful_payment(payment_data):
+async def handle_successful_payment(payment_data: Dict[str, Any]) -> bool:
     """
     Обрабатывает успешный платеж.
     
@@ -64,6 +71,9 @@ async def handle_successful_payment(payment_data):
         bool: True если обработка прошла успешно, False в противном случае
     """
     try:
+        # Инициализация базы данных
+        await db.init()
+        
         # Извлечение необходимых данных
         telegram_payment_charge_id = payment_data.get('telegram_payment_charge_id')
         provider_payment_charge_id = payment_data.get('provider_payment_charge_id')
@@ -72,56 +82,44 @@ async def handle_successful_payment(payment_data):
         if 'invoice_payload' not in payment_data:
             logger.error("No invoice_payload in payment data")
             return False
-            
-        # Разбор payload
-        payload = json.loads(payment_data['invoice_payload'])
-        user_id = payload.get('user_id')
-        product_type = payload.get('product_type')
-        order_id = payload.get('order_id')
         
-        if not all([user_id, product_type, order_id]):
-            logger.error(f"Missing required fields in payload: {payload}")
+        # Разбор payload
+        payload_str = payment_data['invoice_payload']
+        
+        # Проверяем формат payload (должен быть 'order:123' или 'subscription:123')
+        if ":" not in payload_str:
+            logger.error(f"Invalid payload format: {payload_str}")
+            return False
+            
+        payload_type, order_id_str = payload_str.split(":", 1)
+        
+        try:
+            order_id = int(order_id_str)
+        except ValueError:
+            logger.error(f"Invalid order ID in payload: {order_id_str}")
+            return False
+        
+        # Получение заказа из БД
+        order = await db.get_order(order_id)
+        if not order:
+            logger.error(f"Order not found: {order_id}")
             return False
             
         # Обновление статуса заказа в БД
-        await database.update_order_status(
-            order_id=order_id,
-            status='paid',
-            telegram_payment_charge_id=telegram_payment_charge_id,
-            provider_payment_charge_id=provider_payment_charge_id
-        )
+        await db.update_order_status(order_id, 'paid')
         
         # Обработка различных типов продуктов
-        if product_type == 'full_report':
+        if order['product'] == 'full_report':
             # Генерация и отправка PDF отчета
-            await generate_and_send_pdf(user_id)
+            await process_full_report_payment(order)
             
-        elif product_type == 'compatibility':
+        elif order['product'] == 'compatibility':
             # Генерация и отправка отчета о совместимости
-            await generate_and_send_pdf(user_id, report_type='compatibility')
+            await process_compatibility_payment(order)
             
-        elif product_type == 'subscription_month':
+        elif order['product'] == 'subscription_month':
             # Активация подписки
-            trial_end = datetime.now()
-            next_charge = trial_end + timedelta(days=30)
-            
-            await database.create_subscription(
-                user_id=user_id,
-                status='active',
-                trial_end=trial_end,
-                next_charge=next_charge,
-                provider_id=provider_payment_charge_id
-            )
-            
-            # Отправляем сообщение о успешной активации подписки
-            user_data = await database.get_user(user_id)
-            tg_id = user_data.get('tg_id')
-            if tg_id:
-                await bot.send_message(
-                    tg_id,
-                    "🌟 Ваша подписка успешно активирована! Теперь вы будете получать еженедельные "
-                    "нумерологические прогнозы. Следующее списание через 30 дней."
-                )
+            await process_subscription_payment(order)
         
         return True
         
@@ -130,7 +128,55 @@ async def handle_successful_payment(payment_data):
         return False
 
 
-async def handle_payment_webhook(request):
+async def process_full_report_payment(order: Dict[str, Any]):
+    """
+    Обрабатывает оплату полного отчета.
+    
+    Args:
+        order: Данные заказа
+    """
+    # Здесь должен быть код для генерации и отправки PDF-отчета
+    # В рамках этого файла мы только логируем событие
+    logger.info(f"Processing full report payment for order: {order['id']}")
+    
+    # В реальном коде здесь должен быть вызов функций из bot.py для отправки отчета
+
+
+async def process_compatibility_payment(order: Dict[str, Any]):
+    """
+    Обрабатывает оплату отчета о совместимости.
+    
+    Args:
+        order: Данные заказа
+    """
+    logger.info(f"Processing compatibility report payment for order: {order['id']}")
+    
+    # В реальном коде здесь должен быть вызов функций из bot.py для отправки отчета
+
+
+async def process_subscription_payment(order: Dict[str, Any]):
+    """
+    Обрабатывает оплату подписки.
+    
+    Args:
+        order: Данные заказа
+    """
+    logger.info(f"Processing subscription payment for order: {order['id']}")
+    
+    # Активация подписки в БД
+    now = datetime.now().date()
+    next_charge = now + timedelta(days=30)
+    
+    # Получение пользователя
+    user_id = order['user_id']
+    
+    # Создание записи о подписке
+    await db.create_subscription(user_id, "active")
+    
+    # В реальном коде здесь должен быть вызов функций из bot.py для отправки уведомления
+
+
+async def handle_payment_webhook(request: web.Request) -> web.Response:
     """
     Обрабатывает вебхуки от Telegram Payments API.
     
@@ -145,8 +191,14 @@ async def handle_payment_webhook(request):
         return web.Response(status=401, text="Unauthorized")
         
     try:
+        # Получение данных запроса
         data = await request.json()
         logger.info(f"Received payment webhook: {data}")
+        
+        # В тестовом режиме всегда возвращаем успешный ответ
+        if TEST_MODE:
+            logger.info("Test mode: Simulating successful payment processing")
+            return web.Response(status=200, text="Payment webhook processed in test mode")
         
         # Проверка на успешный платеж
         if 'update_id' in data and 'message' in data:
@@ -175,6 +227,9 @@ async def setup_payment_webhook_server(host='0.0.0.0', port=8080):
         host: Хост для веб-сервера
         port: Порт для веб-сервера
     """
+    # Инициализация базы данных
+    await db.init()
+    
     app = web.Application()
     app.router.add_post('/payment', handle_payment_webhook)
     

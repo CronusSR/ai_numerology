@@ -7,7 +7,7 @@ import logging
 from datetime import datetime
 import jinja2
 import weasyprint
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union
 
 # Настройка логгирования
 logging.basicConfig(
@@ -54,20 +54,30 @@ def generate_pdf(user_data: Dict[str, Any], numerology_data: Dict[str, Any],
         # Получаем шаблон
         template = get_jinja_template()
         
+        # Форматируем дату рождения, если она представлена строкой
+        if isinstance(user_data.get('birthdate'), str):
+            try:
+                birthdate = datetime.strptime(user_data['birthdate'], "%Y-%m-%d").date()
+                birthdate_formatted = birthdate.strftime('%d.%m.%Y')
+            except (ValueError, TypeError):
+                birthdate_formatted = user_data.get('birthdate', '')
+        else:
+            birthdate_formatted = user_data.get('birthdate', '').strftime('%d.%m.%Y') if user_data.get('birthdate') else ''
+        
         # Подготавливаем данные для шаблона
         template_data = {
             'user_name': user_data.get('fio', 'Пользователь'),
-            'birthdate': user_data.get('birthdate', '').strftime('%d.%m.%Y') if user_data.get('birthdate') else '',
+            'birthdate': birthdate_formatted,
             'current_date': datetime.now().strftime('%d.%m.%Y'),
             'current_year': datetime.now().year,
             
             # Числа из нумерологических расчетов
-            'life_path_number': numerology_data.get('life_path_number', ''),
-            'expression_number': numerology_data.get('expression_number', ''),
-            'soul_number': numerology_data.get('soul_number', ''),
-            'personality_number': numerology_data.get('personality_number', ''),
+            'life_path_number': numerology_data.get('life_path', ''),
+            'expression_number': numerology_data.get('expression', ''),
+            'soul_number': numerology_data.get('soul_urge', ''),
+            'personality_number': numerology_data.get('personality', ''),
             
-            # Данные интерпретации от ИИ
+            # Данные интерпретации от ИИ - создаем пустые значения по умолчанию
             'introduction': interpretation_data.get('introduction', ''),
             'life_path_interpretation': interpretation_data.get('life_path_interpretation', ''),
             'expression_interpretation': interpretation_data.get('expression_interpretation', ''),
@@ -83,15 +93,20 @@ def generate_pdf(user_data: Dict[str, Any], numerology_data: Dict[str, Any],
         
         # Если это отчет о совместимости, добавляем соответствующие данные
         if report_type == 'compatibility':
-            compatibility_data = interpretation_data.get('compatibility', {})
             template_data.update({
                 'compatibility_report': True,
-                'compatibility_intro': compatibility_data.get('intro', ''),
-                'compatibility_score': compatibility_data.get('score', 0),
-                'compatibility_strengths': compatibility_data.get('strengths', ''),
-                'compatibility_challenges': compatibility_data.get('challenges', ''),
-                'compatibility_recommendations': compatibility_data.get('recommendations', '')
+                'compatibility_intro': interpretation_data.get('intro', ''),
+                'compatibility_score': interpretation_data.get('score', 0),
+                'compatibility_strengths': interpretation_data.get('strengths', ''),
+                'compatibility_challenges': interpretation_data.get('challenges', ''),
+                'compatibility_recommendations': interpretation_data.get('recommendations', '')
             })
+            
+            # Добавляем информацию о партнере, если доступна
+            if 'person2' in numerology_data:
+                partner_data = numerology_data.get('person2', {})
+                template_data['partner_name'] = partner_data.get('fio', 'Партнер')
+                template_data['partner_birthdate'] = partner_data.get('birth_data', {}).get('date', '')
         else:
             template_data['compatibility_report'] = False
         
