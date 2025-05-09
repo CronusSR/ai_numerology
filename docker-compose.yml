@@ -1,0 +1,134 @@
+version: '3.8'
+
+services:
+  # PostgreSQL база данных
+  postgres:
+    image: postgres:15
+    container_name: numerology_postgres
+    restart: always
+    environment:
+      POSTGRES_DB: ${DB_NAME:-numerology_bot}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    networks:
+      - numerology_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis для хранения состояний FSM
+  redis:
+    image: redis:alpine
+    container_name: numerology_redis
+    restart: always
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    networks:
+      - numerology_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # n8n для интеграции с ИИ
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: numerology_n8n
+    restart: always
+    environment:
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - N8N_HOST=${N8N_HOST:-n8n}
+      - WEBHOOK_URL=${N8N_WEBHOOK_URL:-http://localhost:5678}
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_DATABASE=${DB_NAME:-numerology_bot}
+      - DB_POSTGRESDB_USER=${DB_USER:-postgres}
+      - DB_POSTGRESDB_PASSWORD=${DB_PASSWORD:-postgres}
+    ports:
+      - "5678:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+    networks:
+      - numerology_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Telegram бот
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: numerology_bot
+    restart: always
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - PAYMENT_PROVIDER_TOKEN=${PAYMENT_PROVIDER_TOKEN:-null}
+      - PAYMENT_TOKEN_SECRET=${PAYMENT_TOKEN_SECRET:-randomsecret}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${DB_NAME:-numerology_bot}
+      - POSTGRES_USER=${DB_USER:-postgres}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-postgres}
+      - N8N_BASE_URL=http://n8n:5678
+      - ADMIN_USER_ID=${ADMIN_USER_ID:-123456789}
+      - PDF_STORAGE_PATH=/app/pdfs
+      - TEST_MODE=${TEST_MODE:-true}
+      - WEBHOOK_HOST=${WEBHOOK_HOST:-https://example.com}
+      - WEBHOOK_PATH=${WEBHOOK_PATH:-/webhook}
+    volumes:
+      - ./pdfs:/app/pdfs
+    networks:
+      - numerology_network
+    depends_on:
+      - postgres
+      - n8n
+      - redis
+    command: python bot.py
+
+  # Webhook сервер для платежей
+  webhook:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: numerology_webhook
+    restart: always
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - PAYMENT_PROVIDER_TOKEN=${PAYMENT_PROVIDER_TOKEN:-null}
+      - PAYMENT_TOKEN_SECRET=${PAYMENT_TOKEN_SECRET:-randomsecret}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${DB_NAME:-numerology_bot}
+      - POSTGRES_USER=${DB_USER:-postgres}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-postgres}
+      - N8N_BASE_URL=http://n8n:5678
+      - WEBHOOK_HOST=${WEBHOOK_HOST:-0.0.0.0}
+      - WEBHOOK_PORT=${WEBHOOK_PORT:-8080}
+      - TEST_MODE=${TEST_MODE:-true}
+    ports:
+      - "${WEBHOOK_PORT:-8080}:8080"
+    networks:
+      - numerology_network
+    depends_on:
+      - postgres
+      - n8n
+    command: python -c "import asyncio; from payment_webhook import setup_payment_webhook_server; asyncio.run(setup_payment_webhook_server('${WEBHOOK_HOST:-0.0.0.0}', ${WEBHOOK_PORT:-8080}))"
+
+networks:
+  numerology_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  n8n_data:
+  pdfs:
