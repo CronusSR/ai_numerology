@@ -41,7 +41,9 @@ os.makedirs(PDF_STORAGE_PATH, exist_ok=True)
 
 # Инициализация бота и диспетчера
 bot = Bot(token=BOT_TOKEN)
-storage = RedisStorage.from_url('redis://redis:6379/0')
+REDIS_HOST = os.getenv("REDIS_HOST", "redis")
+REDIS_PORT = os.getenv("REDIS_PORT", "6379")
+storage = RedisStorage.from_url(f'redis://{REDIS_HOST}:{REDIS_PORT}/0')
 dp = Dispatcher(storage=storage)
 router = Router()
 dp.include_router(router)
