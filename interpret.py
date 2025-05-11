@@ -4,7 +4,7 @@
 В текущей версии работает в автономном режиме, генерируя ответы локально.
 """
 
-# interpret.py (обновленная версия)
+# interpret.py (обновленная версия для работы с текстовыми ответами)
 
 import aiohttp
 import json
@@ -35,12 +35,16 @@ AUTONOMOUS_MODE = os.getenv("MOCK_N8N", "false").lower() == "true"
 USE_EXTERNAL_WEBHOOK = os.getenv("USE_EXTERNAL_WEBHOOK", "true").lower() == "true"
 TEST_MODE = os.getenv("TEST_MODE", "true").lower() == "true"
 
+# Ожидается ли текстовый ответ вместо JSON
+EXPECT_TEXT_RESPONSE = os.getenv("EXPECT_TEXT_RESPONSE", "true").lower() == "true"
+
 logger.info(f"interpret.py: настройки модуля:")
 logger.info(f"N8N_BASE_URL: {N8N_BASE_URL}")
 logger.info(f"N8N_WEBHOOK_URL: {N8N_WEBHOOK_URL}")
 logger.info(f"EXTERNAL_WEBHOOK_URL: {EXTERNAL_WEBHOOK_URL}")
 logger.info(f"AUTONOMOUS_MODE: {AUTONOMOUS_MODE}")
 logger.info(f"USE_EXTERNAL_WEBHOOK: {USE_EXTERNAL_WEBHOOK}")
+logger.info(f"EXPECT_TEXT_RESPONSE: {EXPECT_TEXT_RESPONSE}")
 logger.info(f"TEST_MODE: {TEST_MODE}")
 
 
@@ -83,7 +87,7 @@ async def send_to_n8n(webhook_url: str, data: Dict[str, Any]) -> Optional[Dict[s
     try:
         headers = {
             "Content-Type": "application/json",
-            "Accept": "application/json"
+            "Accept": "application/json, text/plain, */*"  # Принимаем любой тип ответа
         }
         
         async with aiohttp.ClientSession() as session:
@@ -97,16 +101,44 @@ async def send_to_n8n(webhook_url: str, data: Dict[str, Any]) -> Optional[Dict[s
                 logger.info(f"Получен ответ с кодом: {status}")
                 
                 if status == 200:
-                    try:
-                        result = await response.json()
-                        logger.info(f"Успешный ответ от webhook")
-                        logger.debug(f"Структура ответа: {json.dumps(result, ensure_ascii=False, indent=2)}")
-                        return result
-                    except Exception as json_error:
+                    # Проверяем тип контента
+                    content_type = response.headers.get('Content-Type', '')
+                    
+                    if 'application/json' in content_type:
+                        # Пробуем распарсить JSON
+                        try:
+                            result = await response.json()
+                            logger.info(f"Успешный JSON ответ от webhook")
+                            logger.debug(f"Структура ответа: {json.dumps(result, ensure_ascii=False, indent=2)}")
+                            return result
+                        except Exception as json_error:
+                            logger.error(f"Ошибка при парсинге JSON: {json_error}")
+                    
+                    # Если ожидается текстовый ответ или не удалось распарсить JSON
+                    if EXPECT_TEXT_RESPONSE or 'text/html' in content_type or 'text/plain' in content_type:
                         text = await response.text()
-                        logger.error(f"Ошибка при парсинге JSON: {json_error}")
-                        logger.error(f"Текст ответа: {text}")
-                        return None
+                        logger.info(f"Получен текстовый ответ: {text[:200]}...")
+                        
+                        # Форматируем текстовый ответ в структуру, ожидаемую ботом
+                        report_type = data.get('report_type', 'unknown')
+                        
+                        if report_type == 'mini':
+                            return {"mini_report": text}
+                        elif report_type == 'full':
+                            # Разбиваем текст на основные разделы для полного отчета
+                            full_report = parse_text_to_full_report(text)
+                            return {"full_report": full_report}
+                        elif report_type == 'compatibility_mini':
+                            return {"compatibility_mini_report": text}
+                        elif report_type == 'compatibility':
+                            # Разбиваем текст на основные разделы для отчета о совместимости
+                            compatibility_report = parse_text_to_compatibility_report(text)
+                            return {"compatibility_report": compatibility_report}
+                        else:
+                            return {"message": text}
+                    
+                    logger.error(f"Неизвестный формат ответа")
+                    return None
                 else:
                     error_text = await response.text()
                     logger.error(f"Ошибка от webhook: статус {status}, ответ: {error_text}")
@@ -127,6 +159,64 @@ async def send_to_n8n(webhook_url: str, data: Dict[str, Any]) -> Optional[Dict[s
         # В случае любой другой ошибки генерируем тестовые данные
         logger.warning("Использование тестовых данных из-за непредвиденной ошибки")
         return generate_test_response(webhook_url, data)
+
+
+def parse_text_to_full_report(text: str) -> Dict[str, str]:
+    """
+    Преобразует текстовый ответ в структурированный формат полного отчета.
+    """
+    # Создаем структуру по умолчанию
+    full_report = {
+        "introduction": "Ваш персональный нумерологический анализ.",
+        "life_path_interpretation": "Интерпретация числа жизненного пути.",
+        "expression_interpretation": "Интерпретация числа выражения.",
+        "soul_interpretation": "Интерпретация числа души.",
+        "personality_interpretation": "Интерпретация числа личности.",
+        "life_path_detailed": "Подробный анализ числа жизненного пути.",
+        "expression_detailed": "Подробный анализ числа выражения.",
+        "soul_detailed": "Подробный анализ числа души.",
+        "personality_detailed": "Подробный анализ числа личности.",
+        "forecast": "Прогноз на ближайшее время.",
+        "recommendations": "Рекомендации для вашего развития."
+    }
+    
+    # Проверяем, не пустой ли текст
+    if not text or len(text) < 10:
+        # Если текст слишком короткий, возвращаем структуру по умолчанию
+        full_report["introduction"] = text if text else "Извините, не удалось получить интерпретацию."
+        return full_report
+    
+    # Если текст содержательный, просто помещаем его в introduction
+    # В будущем здесь можно добавить более сложную логику разбора текста на разделы
+    full_report["introduction"] = text
+    
+    return full_report
+
+
+def parse_text_to_compatibility_report(text: str) -> Dict[str, Any]:
+    """
+    Преобразует текстовый ответ в структурированный формат отчета о совместимости.
+    """
+    # Создаем структуру по умолчанию
+    compatibility_report = {
+        "intro": "Анализ совместимости.",
+        "score": 75,  # По умолчанию 75%
+        "strengths": "Сильные стороны отношений.",
+        "challenges": "Возможные трудности.",
+        "recommendations": "Рекомендации для улучшения отношений."
+    }
+    
+    # Проверяем, не пустой ли текст
+    if not text or len(text) < 10:
+        # Если текст слишком короткий, возвращаем структуру по умолчанию
+        compatibility_report["intro"] = text if text else "Извините, не удалось получить интерпретацию."
+        return compatibility_report
+    
+    # Если текст содержательный, просто помещаем его в intro
+    # В будущем здесь можно добавить более сложную логику разбора текста на разделы
+    compatibility_report["intro"] = text
+    
+    return compatibility_report
 
 
 async def send_to_n8n_for_interpretation(data: Dict[str, Any], report_type: str) -> Dict[str, Any]:
@@ -164,44 +254,6 @@ async def send_to_n8n_for_interpretation(data: Dict[str, Any], report_type: str)
                 return {"compatibility_report": {"introduction": "Извините, не удалось получить интерпретацию."}}
             else:
                 return {}
-        
-        # Проверка наличия ожидаемых ключей в ответе
-        expected_key = None
-        if report_type == 'mini':
-            expected_key = 'mini_report'
-        elif report_type == 'full':
-            expected_key = 'full_report'
-        elif report_type == 'compatibility_mini':
-            expected_key = 'compatibility_mini_report'
-        elif report_type == 'compatibility':
-            expected_key = 'compatibility_report'
-        
-        if expected_key and expected_key not in result:
-            logger.warning(f"Ответ не содержит ожидаемого ключа '{expected_key}'. Попытка найти альтернативные ключи...")
-            
-            # Проверка альтернативных ключей или перенос данных из доступных ключей
-            if 'message' in result:
-                if report_type == 'mini':
-                    return {"mini_report": result['message']}
-                elif report_type == 'compatibility_mini':
-                    return {"compatibility_mini_report": result['message']}
-            
-            # Если есть текстовое поле 'text' или 'content'
-            for key in ['text', 'content', 'response', 'result']:
-                if key in result:
-                    if report_type == 'mini':
-                        return {"mini_report": result[key]}
-                    elif report_type == 'full':
-                        return {"full_report": {"introduction": result[key]}}
-                    elif report_type == 'compatibility_mini':
-                        return {"compatibility_mini_report": result[key]}
-                    elif report_type == 'compatibility':
-                        return {"compatibility_report": {"intro": result[key]}}
-            
-            logger.error(f"Не удалось найти подходящий ключ в ответе: {json.dumps(result, ensure_ascii=False)}")
-            
-            # Возвращаем весь ответ как есть, возможно, он имеет правильную структуру
-            return result
                 
         return result
     except Exception as e:
@@ -220,6 +272,7 @@ async def send_to_n8n_for_interpretation(data: Dict[str, Any], report_type: str)
         else:
             return {}
 
+# Оставьте существующую функцию generate_test_response как есть
 def generate_test_response(webhook_url: str, data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Генерирует тестовый ответ для различных типов запросов в режиме тестирования.
