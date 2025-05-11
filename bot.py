@@ -1,4 +1,4 @@
-# bot.py - основной файл бота
+# bot.py - основной файл бота (модифицированная версия для локального запуска)
 import logging
 import os
 import json
@@ -10,40 +10,45 @@ from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.redis import RedisStorage
+from aiogram.fsm.storage.memory import MemoryStorage  # Используем MemoryStorage вместо Redis
 from aiogram.types import (
     Message, InlineKeyboardButton, InlineKeyboardMarkup, PreCheckoutQuery,
     LabeledPrice, FSInputFile
 )
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-from aiohttp import web
 
-from database import Database
+# Импортируем необходимые модули
+try:
+    from database_sqlite import Database  # Сначала пробуем импортировать SQLite версию
+except ImportError:
+    from database import Database  # Если нет, используем оригинальную
+
 from numerology_core import calculate_numerology, calculate_compatibility
 from interpret import send_to_n8n_for_interpretation
 from pdf_generator import generate_pdf
 
 # Настройка логгирования
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Загрузка переменных окружения
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    logger.info("python-dotenv не установлен, используем переменные окружения системы")
 
 # Загрузка переменных окружения
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 PAYMENT_TOKEN = os.getenv("PAYMENT_PROVIDER_TOKEN")
-WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")
-WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/webhook")
-WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 PDF_STORAGE_PATH = os.getenv("PDF_STORAGE_PATH", "./pdfs")
-TEST_MODE = os.getenv("TEST_MODE", "false").lower() == "true"
+TEST_MODE = os.getenv("TEST_MODE", "true").lower() == "true"
 
 # Создаем директорию для хранения PDF, если она не существует
 os.makedirs(PDF_STORAGE_PATH, exist_ok=True)
 
-# Инициализация бота и диспетчера
-bot = Bot(token=BOT_TOKEN)
-REDIS_HOST = os.getenv("REDIS_HOST", "redis")
-REDIS_PORT = os.getenv("REDIS_PORT", "6379")
-storage = RedisStorage.from_url(f'redis://{REDIS_HOST}:{REDIS_PORT}/0')
+# Инициализация бота и диспетчера с MemoryStorage
+bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+storage = MemoryStorage()  # Используем хранилище в памяти вместо Redis
 dp = Dispatcher(storage=storage)
 router = Router()
 dp.include_router(router)
@@ -70,9 +75,9 @@ async def cmd_start(message: Message, state: FSMContext):
     
     # Приветственное сообщение
     await message.answer(
-        "Привет! Я ИИ-Нумеролог. Могу рассчитать ваш нумерологический портрет и дать индивидуальные рекомендации.",
+        "👋 Привет! Я ИИ-Нумеролог. Могу рассчитать ваш нумерологический портрет и дать индивидуальные рекомендации.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Сделать расчёт", callback_data="start_calculation")]
+            [InlineKeyboardButton(text="✨ Сделать расчёт", callback_data="start_calculation")]
         ])
     )
     
@@ -87,7 +92,7 @@ async def process_calculation_button(callback_query: types.CallbackQuery, state:
     
     # Запрос даты рождения
     await callback_query.message.answer(
-        "Пожалуйста, введите вашу дату рождения в формате ДД.ММ.ГГГГ (например, 01.01.1990)"
+        "📅 Пожалуйста, введите вашу дату рождения в формате ДД.ММ.ГГГГ (например, 01.01.1990)"
     )
     
     # Установка состояния ожидания даты рождения
@@ -102,13 +107,13 @@ async def process_birthdate(message: Message, state: FSMContext):
         await state.update_data(birthdate=birthdate.strftime("%Y-%m-%d"))
         
         # Запрос ФИО
-        await message.answer("Спасибо! Теперь введите ваше полное ФИО")
+        await message.answer("✍️ Спасибо! Теперь введите ваше полное ФИО")
         
         # Установка состояния ожидания ФИО
         await state.set_state(UserStates.waiting_for_name)
     except ValueError:
         await message.answer(
-            "Неверный формат даты. Пожалуйста, введите дату в формате ДД.ММ.ГГГГ (например, 01.01.1990)"
+            "❌ Неверный формат даты. Пожалуйста, введите дату в формате ДД.ММ.ГГГГ (например, 01.01.1990)"
         )
 
 # Обработчик ввода ФИО
@@ -125,6 +130,9 @@ async def process_name(message: Message, state: FSMContext):
     # Обновление данных пользователя в БД
     await db.update_user(message.from_user.id, fio, birthdate)
     
+    # Отправка сообщения о начале расчета
+    calculation_message = await message.answer("🔮 Выполняю нумерологические расчеты... Пожалуйста, подождите.")
+    
     # Выполнение нумерологических расчетов
     numerology_results = calculate_numerology(birthdate, fio)
     
@@ -134,25 +142,29 @@ async def process_name(message: Message, state: FSMContext):
     # Отправка результатов на интерпретацию через n8n
     interpretation = await send_to_n8n_for_interpretation(numerology_results, "mini")
     
+    # Удаление сообщения о расчетах
+    await bot.delete_message(chat_id=message.chat.id, message_id=calculation_message.message_id)
+    
     # Формирование и отправка мини-отчета
     mini_report_text = interpretation.get('mini_report', 'Извините, не удалось получить интерпретацию.')
     
     buttons = [
-        [InlineKeyboardButton(text="Полный PDF - 149 ₽", callback_data=f"buy_full_report:{report_id}")]
+        [InlineKeyboardButton(text="📊 Полный PDF - 149 ₽", callback_data=f"buy_full_report:{report_id}")]
     ]
     
     # В тестовом режиме добавляем кнопку "Получить бесплатно (тестовый режим)"
     if TEST_MODE:
         buttons.append([
             InlineKeyboardButton(
-                text="Получить бесплатно (тестовый режим)", 
+                text="🔍 Получить бесплатно (тестовый режим)", 
                 callback_data=f"test_full_report:{report_id}"
             )
         ])
     
     await message.answer(
-        f"Ваш мини-отчет:\n\n{mini_report_text}",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+        f"🌟 <b>Ваш мини-отчет:</b>\n\n{mini_report_text}",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
+        parse_mode=ParseMode.HTML
     )
     
     # Сброс состояния FSM
@@ -162,7 +174,7 @@ async def process_name(message: Message, state: FSMContext):
 @router.callback_query(lambda c: c.data and c.data.startswith("test_full_report:"))
 async def process_test_full_report(callback_query: types.CallbackQuery):
     if not TEST_MODE:
-        await callback_query.answer("Тестовый режим отключен")
+        await callback_query.answer("⚠️ Тестовый режим отключен")
         return
         
     # Подтверждение запроса
@@ -175,7 +187,7 @@ async def process_test_full_report(callback_query: types.CallbackQuery):
     report = await db.get_report(report_id)
     
     if not report:
-        await callback_query.message.answer("Отчет не найден. Пожалуйста, создайте новый расчет.")
+        await callback_query.message.answer("❌ Отчет не найден. Пожалуйста, создайте новый расчет.")
         return
         
     # Получение данных пользователя
@@ -183,20 +195,23 @@ async def process_test_full_report(callback_query: types.CallbackQuery):
     user = await db.get_user_by_id(user_id)
     
     if not user:
-        await callback_query.message.answer("Произошла ошибка: пользователь не найден.")
+        await callback_query.message.answer("❌ Произошла ошибка: пользователь не найден.")
         return
-        
-    # Отправка запроса на интерпретацию для полного отчета
-    interpretation = await send_to_n8n_for_interpretation(report["core_json"], "full")
     
     # Временно помечаем пользователя о генерации отчета
-    await callback_query.message.answer("⏳ Генерация полного отчета... Пожалуйста, подождите.")
+    wait_message = await callback_query.message.answer("⏳ Генерация полного отчета... Пожалуйста, подождите.")
+    
+    # Отправка запроса на интерпретацию для полного отчета
+    interpretation = await send_to_n8n_for_interpretation(report["core_json"], "full")
     
     # Генерация PDF
     pdf_path = generate_pdf(user, report["core_json"], interpretation.get("full_report", {}))
     
+    # Удаление сообщения о ожидании
+    await bot.delete_message(chat_id=callback_query.message.chat.id, message_id=wait_message.message_id)
+    
     if not pdf_path:
-        await callback_query.message.answer("Произошла ошибка при генерации PDF. Пожалуйста, попробуйте позже.")
+        await callback_query.message.answer("❌ Произошла ошибка при генерации PDF. Пожалуйста, попробуйте позже.")
         return
         
     # Обновление URL PDF в БД
@@ -205,35 +220,39 @@ async def process_test_full_report(callback_query: types.CallbackQuery):
     # Отправка PDF пользователю
     await callback_query.message.answer("✅ Ваш полный отчет готов (тестовый режим).")
     
-    # Скачивание PDF и отправка пользователю
-    pdf_file = FSInputFile(pdf_path, filename="numerology_report.pdf")
-    await bot.send_document(callback_query.message.chat.id, pdf_file)
-    
-    # Предложение подписки
-    subscription_buttons = [
-        [InlineKeyboardButton(text="Оформить подписку", callback_data="subscribe")]
-    ]
-    
-    # В тестовом режиме добавляем кнопку для бесплатной тестовой подписки
-    if TEST_MODE:
-        subscription_buttons.append([
-            InlineKeyboardButton(
-                text="Активировать бесплатно (тестовый режим)", 
-                callback_data="test_subscribe"
-            )
-        ])
-    
-    await callback_query.message.answer(
-        "🌟 Хотите получать еженедельные нумерологические прогнозы?\n"
-        "Оформите подписку всего за 299 ₽ в месяц!",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=subscription_buttons)
-    )
+    try:
+        # Скачивание PDF и отправка пользователю
+        pdf_file = FSInputFile(pdf_path, filename="numerology_report.pdf")
+        await bot.send_document(callback_query.message.chat.id, pdf_file)
+        
+        # Предложение подписки
+        subscription_buttons = [
+            [InlineKeyboardButton(text="💎 Оформить подписку", callback_data="subscribe")]
+        ]
+        
+        # В тестовом режиме добавляем кнопку для бесплатной тестовой подписки
+        if TEST_MODE:
+            subscription_buttons.append([
+                InlineKeyboardButton(
+                    text="🔔 Активировать бесплатно (тестовый режим)", 
+                    callback_data="test_subscribe"
+                )
+            ])
+        
+        await callback_query.message.answer(
+            "🌟 Хотите получать еженедельные нумерологические прогнозы?\n"
+            "Оформите подписку всего за 299 ₽ в месяц!",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=subscription_buttons)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при отправке PDF: {e}")
+        await callback_query.message.answer(f"❌ Произошла ошибка при отправке PDF: {e}")
 
 # Обработчик кнопки "Активировать бесплатно (тестовый режим)" для подписки
 @router.callback_query(lambda c: c.data == "test_subscribe")
 async def process_test_subscription(callback_query: types.CallbackQuery):
     if not TEST_MODE:
-        await callback_query.answer("Тестовый режим отключен")
+        await callback_query.answer("⚠️ Тестовый режим отключен")
         return
         
     # Подтверждение запроса
@@ -244,7 +263,7 @@ async def process_test_subscription(callback_query: types.CallbackQuery):
     user = await db.get_user_by_tg_id(user_id)
     
     if not user:
-        await callback_query.message.answer("Произошла ошибка: пользователь не найден.")
+        await callback_query.message.answer("❌ Произошла ошибка: пользователь не найден.")
         return
     
     # Получение текущей подписки
@@ -253,7 +272,7 @@ async def process_test_subscription(callback_query: types.CallbackQuery):
     if subscription and subscription["status"] in ["active", "trial"]:
         # Если подписка уже активна
         await callback_query.message.answer(
-            "У вас уже есть активная подписка. "
+            "ℹ️ У вас уже есть активная подписка. "
             "Еженедельно вы будете получать персональный нумерологический прогноз."
         )
     else:
@@ -269,7 +288,7 @@ async def process_test_subscription(callback_query: types.CallbackQuery):
             )
         else:
             await callback_query.message.answer(
-                "Произошла ошибка при активации подписки. Пожалуйста, попробуйте позже."
+                "❌ Произошла ошибка при активации подписки. Пожалуйста, попробуйте позже."
             )
 
 # Обработчик кнопки "Оформить подписку" (платная версия)
@@ -299,7 +318,7 @@ async def process_subscription(callback_query: types.CallbackQuery):
     )
     
     if not order_id:
-        await callback_query.message.answer("Произошла ошибка при создании заказа.")
+        await callback_query.message.answer("❌ Произошла ошибка при создании заказа.")
         return
     
     # Создание платежного инвойса
@@ -348,7 +367,7 @@ async def process_successful_payment(message: Message):
     # Разбор payload
     if ":" not in payload:
         logger.error(f"Invalid payload format: {payload}")
-        await message.answer("Произошла ошибка при обработке платежа.")
+        await message.answer("❌ Произошла ошибка при обработке платежа.")
         return
     
     payload_type, order_id_str = payload.split(":", 1)
@@ -357,14 +376,14 @@ async def process_successful_payment(message: Message):
         order_id = int(order_id_str)
     except ValueError:
         logger.error(f"Invalid order ID in payload: {order_id_str}")
-        await message.answer("Произошла ошибка при обработке платежа.")
+        await message.answer("❌ Произошла ошибка при обработке платежа.")
         return
     
     # Получение заказа
     order = await db.get_order(order_id)
     if not order:
         logger.error(f"Order not found: {order_id}")
-        await message.answer("Произошла ошибка: заказ не найден.")
+        await message.answer("❌ Произошла ошибка: заказ не найден.")
         return
     
     # Обновление статуса заказа
@@ -381,7 +400,7 @@ async def process_successful_payment(message: Message):
         # Обработка покупки подписки
         await process_subscription_payment(message, order)
     else:
-        await message.answer(f"Оплата за {order['product']} успешно получена.")
+        await message.answer(f"✅ Оплата за {order['product']} успешно получена.")
 
 async def process_full_report_payment(message: Message, order: Dict[str, Any]):
     """Обрабатывает успешную оплату полного отчета"""
@@ -390,23 +409,23 @@ async def process_full_report_payment(message: Message, order: Dict[str, Any]):
     report_id = payload.get("report_id")
     
     if not report_id:
-        await message.answer("Произошла ошибка: не указан ID отчета.")
+        await message.answer("❌ Произошла ошибка: не указан ID отчета.")
         return
     
     # Получение отчета
     report = await db.get_report(report_id)
     if not report:
-        await message.answer("Произошла ошибка: отчет не найден.")
+        await message.answer("❌ Произошла ошибка: отчет не найден.")
         return
     
     # Получение данных пользователя
     user = await db.get_user_by_id(user_id)
     if not user:
-        await message.answer("Произошла ошибка: пользователь не найден.")
+        await message.answer("❌ Произошла ошибка: пользователь не найден.")
         return
     
     # Отправка уведомления пользователю
-    await message.answer("✅ Оплата успешно получена! Генерирую ваш полный отчет...")
+    wait_message = await message.answer("⏳ Оплата успешно получена! Генерирую ваш полный отчет...")
     
     # Отправка запроса на интерпретацию для полного отчета
     interpretation = await send_to_n8n_for_interpretation(report["core_json"], "full")
@@ -414,25 +433,32 @@ async def process_full_report_payment(message: Message, order: Dict[str, Any]):
     # Генерация PDF
     pdf_path = generate_pdf(user, report["core_json"], interpretation.get("full_report", {}))
     
+    # Удаление сообщения о ожидании
+    await bot.delete_message(chat_id=message.chat.id, message_id=wait_message.message_id)
+    
     if not pdf_path:
-        await message.answer("Произошла ошибка при генерации PDF. Пожалуйста, обратитесь в поддержку.")
+        await message.answer("❌ Произошла ошибка при генерации PDF. Пожалуйста, обратитесь в поддержку.")
         return
     
     # Обновление URL PDF в БД
     await db.update_report_pdf(report_id, pdf_path)
     
     # Отправка PDF пользователю
-    pdf_file = FSInputFile(pdf_path, filename="numerology_report.pdf")
-    await bot.send_document(message.chat.id, pdf_file)
-    
-    # Предложение подписки
-    await message.answer(
-        "🌟 Хотите получать еженедельные нумерологические прогнозы?\n"
-        "Оформите подписку всего за 299 ₽ в месяц!",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Оформить подписку", callback_data="subscribe")]
-        ])
-    )
+    try:
+        pdf_file = FSInputFile(pdf_path, filename="numerology_report.pdf")
+        await bot.send_document(message.chat.id, pdf_file)
+        
+        # Предложение подписки
+        await message.answer(
+            "🌟 Хотите получать еженедельные нумерологические прогнозы?\n"
+            "Оформите подписку всего за 299 ₽ в месяц!",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💎 Оформить подписку", callback_data="subscribe")]
+            ])
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при отправке PDF: {e}")
+        await message.answer(f"❌ Произошла ошибка при отправке PDF: {e}")
 
 async def process_compatibility_payment(message: Message, order: Dict[str, Any]):
     """Обрабатывает успешную оплату отчета о совместимости"""
@@ -441,23 +467,23 @@ async def process_compatibility_payment(message: Message, order: Dict[str, Any])
     report_id = payload.get("report_id")
     
     if not report_id:
-        await message.answer("Произошла ошибка: не указан ID отчета.")
+        await message.answer("❌ Произошла ошибка: не указан ID отчета.")
         return
     
     # Получение отчета
     report = await db.get_report(report_id)
     if not report:
-        await message.answer("Произошла ошибка: отчет не найден.")
+        await message.answer("❌ Произошла ошибка: отчет не найден.")
         return
     
     # Получение данных пользователя
     user = await db.get_user_by_id(user_id)
     if not user:
-        await message.answer("Произошла ошибка: пользователь не найден.")
+        await message.answer("❌ Произошла ошибка: пользователь не найден.")
         return
     
     # Отправка уведомления пользователю
-    await message.answer("✅ Оплата успешно получена! Генерирую отчет о совместимости...")
+    wait_message = await message.answer("⏳ Оплата успешно получена! Генерирую отчет о совместимости...")
     
     # Отправка запроса на интерпретацию для отчета о совместимости
     interpretation = await send_to_n8n_for_interpretation(report["core_json"], "compatibility")
@@ -465,25 +491,32 @@ async def process_compatibility_payment(message: Message, order: Dict[str, Any])
     # Генерация PDF
     pdf_path = generate_pdf(user, report["core_json"], interpretation.get("compatibility_report", {}), "compatibility")
     
+    # Удаление сообщения о ожидании
+    await bot.delete_message(chat_id=message.chat.id, message_id=wait_message.message_id)
+    
     if not pdf_path:
-        await message.answer("Произошла ошибка при генерации PDF. Пожалуйста, обратитесь в поддержку.")
+        await message.answer("❌ Произошла ошибка при генерации PDF. Пожалуйста, обратитесь в поддержку.")
         return
     
     # Обновление URL PDF в БД
     await db.update_report_pdf(report_id, pdf_path)
     
     # Отправка PDF пользователю
-    pdf_file = FSInputFile(pdf_path, filename="compatibility_report.pdf")
-    await bot.send_document(message.chat.id, pdf_file)
-    
-    # Предложение подписки
-    await message.answer(
-        "🌟 Хотите получать еженедельные нумерологические прогнозы?\n"
-        "Оформите подписку всего за 299 ₽ в месяц!",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Оформить подписку", callback_data="subscribe")]
-        ])
-    )
+    try:
+        pdf_file = FSInputFile(pdf_path, filename="compatibility_report.pdf")
+        await bot.send_document(message.chat.id, pdf_file)
+        
+        # Предложение подписки
+        await message.answer(
+            "🌟 Хотите получать еженедельные нумерологические прогнозы?\n"
+            "Оформите подписку всего за 299 ₽ в месяц!",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💎 Оформить подписку", callback_data="subscribe")]
+            ])
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при отправке PDF: {e}")
+        await message.answer(f"❌ Произошла ошибка при отправке PDF: {e}")
 
 async def process_subscription_payment(message: Message, order: Dict[str, Any]):
     """Обрабатывает успешную оплату подписки"""
@@ -492,7 +525,7 @@ async def process_subscription_payment(message: Message, order: Dict[str, Any]):
     # Получение данных пользователя
     user = await db.get_user_by_id(user_id)
     if not user:
-        await message.answer("Произошла ошибка: пользователь не найден.")
+        await message.answer("❌ Произошла ошибка: пользователь не найден.")
         return
     
     # Создание или обновление записи о подписке
@@ -519,7 +552,7 @@ async def process_subscription_payment(message: Message, order: Dict[str, Any]):
             )
         else:
             await message.answer(
-                "Произошла ошибка при активации подписки. Пожалуйста, обратитесь в поддержку."
+                "❌ Произошла ошибка при активации подписки. Пожалуйста, обратитесь в поддержку."
             )
 
 # Обработчик команды /report
@@ -530,7 +563,7 @@ async def cmd_report(message: Message):
     # Проверка наличия пользователя в БД
     user = await db.get_user_by_tg_id(user_id)
     if not user:
-        await message.answer("Для начала работы с ботом отправьте команду /start")
+        await message.answer("❓ Для начала работы с ботом отправьте команду /start")
         return
     
     # Получение последнего отчета пользователя
@@ -542,7 +575,7 @@ async def cmd_report(message: Message):
         
         if not report or not report.get("pdf_url"):
             await message.answer(
-                "У вас еще нет купленных отчетов. Воспользуйтесь командой /start для создания расчета."
+                "ℹ️ У вас еще нет купленных отчетов. Воспользуйтесь командой /start для создания расчета."
             )
             return
     
@@ -550,10 +583,14 @@ async def cmd_report(message: Message):
     pdf_path = report.get("pdf_url")
     report_type = "отчет о совместимости" if report.get("report_type") == "compatibility" else "полный нумерологический отчет"
     
-    await message.answer(f"Отправляю ваш последний {report_type}...")
+    await message.answer(f"📤 Отправляю ваш последний {report_type}...")
     
-    pdf_file = FSInputFile(pdf_path, filename=f"{report_type}.pdf")
-    await bot.send_document(message.chat.id, pdf_file)
+    try:
+        pdf_file = FSInputFile(pdf_path, filename=f"{report_type}.pdf")
+        await bot.send_document(message.chat.id, pdf_file)
+    except Exception as e:
+        logger.error(f"Ошибка при отправке PDF: {e}")
+        await message.answer(f"❌ Произошла ошибка при отправке PDF: {e}")
 
 # Обработчик команды /subscribe (управление подпиской)
 @router.message(Command("subscribe"))
@@ -563,7 +600,7 @@ async def cmd_subscribe(message: Message):
     # Проверка наличия пользователя в БД
     user = await db.get_user_by_tg_id(user_id)
     if not user:
-        await message.answer("Для начала работы с ботом отправьте команду /start")
+        await message.answer("❓ Для начала работы с ботом отправьте команду /start")
         return
     
     # Получение текущей подписки
@@ -572,20 +609,20 @@ async def cmd_subscribe(message: Message):
     if not subscription:
         # Если нет подписки, предлагаем оформить
         buttons = [
-            [InlineKeyboardButton(text="Оформить подписку", callback_data="subscribe")]
+            [InlineKeyboardButton(text="💎 Оформить подписку", callback_data="subscribe")]
         ]
         
         # В тестовом режиме добавляем кнопку для бесплатной тестовой подписки
         if TEST_MODE:
             buttons.append([
                 InlineKeyboardButton(
-                    text="Активировать бесплатно (тестовый режим)", 
+                    text="🔔 Активировать бесплатно (тестовый режим)", 
                     callback_data="test_subscribe"
                 )
             ])
         
         await message.answer(
-            "У вас нет активной подписки на еженедельные прогнозы.\n\n"
+            "ℹ️ У вас нет активной подписки на еженедельные прогнозы.\n\n"
             "Стоимость подписки - 299 ₽ в месяц.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
         )
@@ -593,49 +630,60 @@ async def cmd_subscribe(message: Message):
         # Если подписка есть, показываем её статус
         status = subscription["status"]
         buttons = []
-        
         if status == "active":
             next_charge = subscription.get("next_charge")
+            if isinstance(next_charge, str):
+                try:
+                    next_charge = datetime.fromisoformat(next_charge).date()
+                except ValueError:
+                    next_charge = None
+            
             next_charge_str = next_charge.strftime("%d.%m.%Y") if next_charge else "неизвестно"
             
             await message.answer(
-                f"У вас активная подписка на еженедельные прогнозы.\n\n"
+                f"💎 У вас активная подписка на еженедельные прогнозы.\n\n"
                 f"Следующее списание: {next_charge_str}\n"
                 f"Стоимость: 299 ₽ в месяц.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="Отменить подписку", callback_data="cancel_subscription")]
+                    [InlineKeyboardButton(text="❌ Отменить подписку", callback_data="cancel_subscription")]
                 ])
             )
         elif status == "trial":
             trial_end = subscription.get("trial_end")
+            if isinstance(trial_end, str):
+                try:
+                    trial_end = datetime.fromisoformat(trial_end).date()
+                except ValueError:
+                    trial_end = None
+            
             trial_end_str = trial_end.strftime("%d.%m.%Y") if trial_end else "неизвестно"
             
             buttons = [
-                [InlineKeyboardButton(text="Оформить полную подписку", callback_data="subscribe")]
+                [InlineKeyboardButton(text="💎 Оформить полную подписку", callback_data="subscribe")]
             ]
             
             await message.answer(
-                f"У вас активна пробная подписка на еженедельные прогнозы.\n\n"
+                f"🔍 У вас активна пробная подписка на еженедельные прогнозы.\n\n"
                 f"Срок действия: до {trial_end_str}\n\n"
                 f"После окончания пробного периода подписка будет отключена.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
             )
         elif status == "canceled":
             buttons = [
-                [InlineKeyboardButton(text="Возобновить подписку", callback_data="subscribe")]
+                [InlineKeyboardButton(text="🔄 Возобновить подписку", callback_data="subscribe")]
             ]
             
             # В тестовом режиме добавляем кнопку для бесплатной тестовой подписки
             if TEST_MODE:
                 buttons.append([
                     InlineKeyboardButton(
-                        text="Активировать бесплатно (тестовый режим)", 
+                        text="🔔 Активировать бесплатно (тестовый режим)", 
                         callback_data="test_subscribe"
                     )
                 ])
             
             await message.answer(
-                "Ваша подписка на еженедельные прогнозы отменена.\n\n"
+                "🚫 Ваша подписка на еженедельные прогнозы отменена.\n\n"
                 "Вы можете возобновить её в любой момент.",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
             )
@@ -652,7 +700,7 @@ async def process_cancel_subscription(callback_query: types.CallbackQuery):
     subscription = await db.get_user_subscription(user_id)
     
     if not subscription or subscription["status"] != "active":
-        await callback_query.message.answer("У вас нет активной подписки для отмены.")
+        await callback_query.message.answer("ℹ️ У вас нет активной подписки для отмены.")
         return
     
     # Обновление статуса подписки
@@ -666,7 +714,7 @@ async def process_cancel_subscription(callback_query: types.CallbackQuery):
         )
     else:
         await callback_query.message.answer(
-            "Произошла ошибка при отмене подписки. Пожалуйста, попробуйте позже."
+            "❌ Произошла ошибка при отмене подписки. Пожалуйста, попробуйте позже."
         )
 
 # Обработчик команды /compatibility
@@ -677,21 +725,21 @@ async def cmd_compatibility(message: Message, state: FSMContext):
     # Проверка наличия пользователя в БД
     user = await db.get_user_by_tg_id(user_id)
     if not user:
-        await message.answer("Для начала работы с ботом отправьте команду /start")
+        await message.answer("❓ Для начала работы с ботом отправьте команду /start")
         return
     
     # Проверка наличия данных пользователя
     if not user.get("birthdate") or not user.get("fio"):
         await message.answer(
-            "Для расчета совместимости необходимо сначала ввести свои данные.\n"
+            "❗ Для расчета совместимости необходимо сначала ввести свои данные.\n"
             "Отправьте команду /start и следуйте инструкциям."
         )
         return
     
     # Запрос даты рождения партнера
     await message.answer(
-        "Давайте рассчитаем вашу совместимость с другим человеком.\n\n"
-        "Введите дату рождения партнера в формате ДД.ММ.ГГГГ (например, 01.01.1990)"
+        "👥 Давайте рассчитаем вашу совместимость с другим человеком.\n\n"
+        "📅 Введите дату рождения партнера в формате ДД.ММ.ГГГГ (например, 01.01.1990)"
     )
     
     # Сохранение данных пользователя
@@ -711,13 +759,13 @@ async def process_partner_birthdate(message: Message, state: FSMContext):
         await state.update_data(partner_birthdate=partner_birthdate.strftime("%Y-%m-%d"))
         
         # Запрос ФИО партнера
-        await message.answer("Спасибо! Теперь введите полное ФИО партнера")
+        await message.answer("✍️ Спасибо! Теперь введите полное ФИО партнера")
         
         # Установка состояния ожидания ФИО партнера
         await state.set_state(UserStates.waiting_for_partner_name)
     except ValueError:
         await message.answer(
-            "Неверный формат даты. Пожалуйста, введите дату в формате ДД.ММ.ГГГГ (например, 01.01.1990)"
+            "❌ Неверный формат даты. Пожалуйста, введите дату в формате ДД.ММ.ГГГГ (например, 01.01.1990)"
         )
 
 # Обработчик ввода ФИО партнера
@@ -733,6 +781,9 @@ async def process_partner_name(message: Message, state: FSMContext):
     partner_birthdate = data.get("partner_birthdate")
     partner_fio = data.get("partner_fio")
     
+    # Отправка сообщения о начале расчета
+    calculation_message = await message.answer("🔮 Выполняю расчет совместимости... Пожалуйста, подождите.")
+    
     # Выполнение расчета совместимости
     compatibility_results = calculate_compatibility(
         user_birthdate, user_fio,
@@ -745,18 +796,21 @@ async def process_partner_name(message: Message, state: FSMContext):
     # Отправка результатов на интерпретацию через n8n
     interpretation = await send_to_n8n_for_interpretation(compatibility_results, "compatibility_mini")
     
+    # Удаление сообщения о расчетах
+    await bot.delete_message(chat_id=message.chat.id, message_id=calculation_message.message_id)
+    
     # Формирование и отправка мини-отчета о совместимости
     compatibility_score = compatibility_results.get("compatibility", {}).get("total", 0)
     score_percent = int(compatibility_score * 10)  # преобразуем оценку из 10 в проценты
     
     mini_report_text = interpretation.get(
         'compatibility_mini_report', 
-        f"Ваша совместимость с {partner_fio}: {score_percent}%"
+        f"🌟 Ваша совместимость с {partner_fio}: {score_percent}%"
     )
     
     buttons = [
         [InlineKeyboardButton(
-            text="Полный отчет о совместимости - 199 ₽", 
+            text="📊 Полный отчет о совместимости - 199 ₽", 
             callback_data=f"buy_compatibility:{report_id}"
         )]
     ]
@@ -765,7 +819,7 @@ async def process_partner_name(message: Message, state: FSMContext):
     if TEST_MODE:
         buttons.append([
             InlineKeyboardButton(
-                text="Получить бесплатно (тестовый режим)", 
+                text="🔍 Получить бесплатно (тестовый режим)", 
                 callback_data=f"test_compatibility:{report_id}"
             )
         ])
@@ -782,7 +836,7 @@ async def process_partner_name(message: Message, state: FSMContext):
 @router.callback_query(lambda c: c.data and c.data.startswith("test_compatibility:"))
 async def process_test_compatibility(callback_query: types.CallbackQuery):
     if not TEST_MODE:
-        await callback_query.answer("Тестовый режим отключен")
+        await callback_query.answer("⚠️ Тестовый режим отключен")
         return
         
     # Подтверждение запроса
@@ -795,7 +849,7 @@ async def process_test_compatibility(callback_query: types.CallbackQuery):
     report = await db.get_report(report_id)
     
     if not report:
-        await callback_query.message.answer("Отчет не найден. Пожалуйста, создайте новый расчет.")
+        await callback_query.message.answer("❌ Отчет не найден. Пожалуйста, создайте новый расчет.")
         return
         
     # Получение данных пользователя
@@ -803,20 +857,23 @@ async def process_test_compatibility(callback_query: types.CallbackQuery):
     user = await db.get_user_by_id(user_id)
     
     if not user:
-        await callback_query.message.answer("Произошла ошибка: пользователь не найден.")
+        await callback_query.message.answer("❌ Произошла ошибка: пользователь не найден.")
         return
-        
-    # Отправка запроса на интерпретацию для полного отчета о совместимости
-    interpretation = await send_to_n8n_for_interpretation(report["core_json"], "compatibility")
     
     # Временно помечаем пользователя о генерации отчета
-    await callback_query.message.answer("⏳ Генерация отчета о совместимости... Пожалуйста, подождите.")
+    wait_message = await callback_query.message.answer("⏳ Генерация отчета о совместимости... Пожалуйста, подождите.")
+    
+    # Отправка запроса на интерпретацию для полного отчета о совместимости
+    interpretation = await send_to_n8n_for_interpretation(report["core_json"], "compatibility")
     
     # Генерация PDF
     pdf_path = generate_pdf(user, report["core_json"], interpretation.get("compatibility_report", {}), "compatibility")
     
+    # Удаление сообщения о ожидании
+    await bot.delete_message(chat_id=callback_query.message.chat.id, message_id=wait_message.message_id)
+    
     if not pdf_path:
-        await callback_query.message.answer("Произошла ошибка при генерации PDF. Пожалуйста, попробуйте позже.")
+        await callback_query.message.answer("❌ Произошла ошибка при генерации PDF. Пожалуйста, попробуйте позже.")
         return
         
     # Обновление URL PDF в БД
@@ -825,9 +882,13 @@ async def process_test_compatibility(callback_query: types.CallbackQuery):
     # Отправка PDF пользователю
     await callback_query.message.answer("✅ Ваш отчет о совместимости готов (тестовый режим).")
     
-    # Скачивание PDF и отправка пользователю
-    pdf_file = FSInputFile(pdf_path, filename="compatibility_report.pdf")
-    await bot.send_document(callback_query.message.chat.id, pdf_file)
+    try:
+        # Скачивание PDF и отправка пользователю
+        pdf_file = FSInputFile(pdf_path, filename="compatibility_report.pdf")
+        await bot.send_document(callback_query.message.chat.id, pdf_file)
+    except Exception as e:
+        logger.error(f"Ошибка при отправке PDF: {e}")
+        await callback_query.message.answer(f"❌ Произошла ошибка при отправке PDF: {e}")
 
 # Обработчик кнопки "Полный отчет о совместимости - 199 ₽"
 @router.callback_query(lambda c: c.data and c.data.startswith("buy_compatibility:"))
@@ -850,7 +911,7 @@ async def process_buy_compatibility(callback_query: types.CallbackQuery):
     report = await db.get_report(report_id)
     
     if not report:
-        await callback_query.message.answer("Отчет не найден. Пожалуйста, создайте новый расчет.")
+        await callback_query.message.answer("❌ Отчет не найден. Пожалуйста, создайте новый расчет.")
         return
     
     # Получение данных пользователя
@@ -866,7 +927,7 @@ async def process_buy_compatibility(callback_query: types.CallbackQuery):
     )
     
     if not order_id:
-        await callback_query.message.answer("Произошла ошибка при создании заказа.")
+        await callback_query.message.answer("❌ Произошла ошибка при создании заказа.")
         return
     
     # Создание платежного инвойса
@@ -922,7 +983,7 @@ async def process_buy_full_report(callback_query: types.CallbackQuery):
     report = await db.get_report(report_id)
     
     if not report:
-        await callback_query.message.answer("Отчет не найден. Пожалуйста, создайте новый расчет.")
+        await callback_query.message.answer("❌ Отчет не найден. Пожалуйста, создайте новый расчет.")
         return
     
     # Получение данных пользователя
@@ -938,7 +999,7 @@ async def process_buy_full_report(callback_query: types.CallbackQuery):
     )
     
     if not order_id:
-        await callback_query.message.answer("Произошла ошибка при создании заказа.")
+        await callback_query.message.answer("❌ Произошла ошибка при создании заказа.")
         return
     
     # Создание платежного инвойса
@@ -977,8 +1038,8 @@ async def process_buy_full_report(callback_query: types.CallbackQuery):
 @router.message(Command("help"))
 async def cmd_help(message: Message):
     help_text = (
-        "🔮 ИИ-Нумеролог - ваш персональный нумерологический консультант\n\n"
-        "Доступные команды:\n"
+        "🔮 <b>ИИ-Нумеролог</b> - ваш персональный нумерологический консультант\n\n"
+        "<b>Доступные команды:</b>\n"
         "/start - Начать расчет нумерологического портрета\n"
         "/report - Получить последний купленный отчет\n"
         "/compatibility - Рассчитать совместимость с партнером\n"
@@ -986,7 +1047,7 @@ async def cmd_help(message: Message):
         "/settings - Настройки языка и уведомлений\n"
         "/help - Справка и информация о боте\n\n"
         
-        "📊 Доступные услуги:\n"
+        "<b>📊 Доступные услуги:</b>\n"
         "🔸 Бесплатный мини-отчет - базовый анализ вашего нумерологического портрета\n"
         "🔸 Полный PDF-отчет (149 ₽) - детальный анализ с рекомендациями\n"
         "🔸 Анализ совместимости (199 ₽) - расчет нумерологической совместимости с партнером\n"
@@ -995,7 +1056,7 @@ async def cmd_help(message: Message):
         "По всем вопросам обращайтесь к администратору: @admin_username"
     )
     
-    await message.answer(help_text)
+    await message.answer(help_text, parse_mode=ParseMode.HTML)
 
 # Обработчик команды /settings
 @router.message(Command("settings"))
@@ -1005,7 +1066,7 @@ async def cmd_settings(message: Message):
     # Проверка наличия пользователя в БД
     user = await db.get_user_by_tg_id(user_id)
     if not user:
-        await message.answer("Для начала работы с ботом отправьте команду /start")
+        await message.answer("❓ Для начала работы с ботом отправьте команду /start")
         return
     
     # Получение текущих настроек
@@ -1022,10 +1083,11 @@ async def cmd_settings(message: Message):
     ])
     
     await message.answer(
-        "⚙️ Настройки\n\n"
+        "⚙️ <b>Настройки</b>\n\n"
         f"Текущий язык: {lang_text}\n"
         f"Уведомления: {push_text}",
-        reply_markup=settings_keyboard
+        reply_markup=settings_keyboard,
+        parse_mode=ParseMode.HTML
     )
 
 # Обработчик кнопки переключения языка
@@ -1039,7 +1101,7 @@ async def toggle_lang(callback_query: types.CallbackQuery):
     # Получение текущих настроек
     user = await db.get_user_by_tg_id(user_id)
     if not user:
-        await callback_query.message.answer("Для начала работы с ботом отправьте команду /start")
+        await callback_query.message.answer("❓ Для начала работы с ботом отправьте команду /start")
         return
     
     current_lang = user.get("lang", "ru")
@@ -1060,13 +1122,14 @@ async def toggle_lang(callback_query: types.CallbackQuery):
         ])
         
         await callback_query.message.edit_text(
-            "⚙️ Настройки\n\n"
+            "⚙️ <b>Настройки</b>\n\n"
             f"Текущий язык: {lang_text}\n"
             f"Уведомления: {push_text}",
-            reply_markup=settings_keyboard
+            reply_markup=settings_keyboard,
+            parse_mode=ParseMode.HTML
         )
     else:
-        await callback_query.message.answer("Произошла ошибка при обновлении настроек.")
+        await callback_query.message.answer("❌ Произошла ошибка при обновлении настроек.")
 
 # Обработчик кнопки переключения уведомлений
 @router.callback_query(lambda c: c.data == "toggle_push")
@@ -1079,7 +1142,7 @@ async def toggle_push(callback_query: types.CallbackQuery):
     # Получение текущих настроек
     user = await db.get_user_by_tg_id(user_id)
     if not user:
-        await callback_query.message.answer("Для начала работы с ботом отправьте команду /start")
+        await callback_query.message.answer("❓ Для начала работы с ботом отправьте команду /start")
         return
     
     current_push = user.get("push_enabled", True)
@@ -1100,75 +1163,50 @@ async def toggle_push(callback_query: types.CallbackQuery):
         ])
         
         await callback_query.message.edit_text(
-            "⚙️ Настройки\n\n"
+            "⚙️ <b>Настройки</b>\n\n"
             f"Текущий язык: {lang_text}\n"
             f"Уведомления: {push_text}",
-            reply_markup=settings_keyboard
+            reply_markup=settings_keyboard,
+            parse_mode=ParseMode.HTML
         )
     else:
-        await callback_query.message.answer("Произошла ошибка при обновлении настроек.")
+        await callback_query.message.answer("❌ Произошла ошибка при обновлении настроек.")
 
 # Обработчик неизвестных команд
 @router.message(Command())
 async def unknown_command(message: Message):
     await message.answer(
-        "Неизвестная команда. Введите /help для получения списка доступных команд."
+        "❓ Неизвестная команда. Введите /help для получения списка доступных команд."
     )
 
 # Обработчик простых сообщений (не команд)
 @router.message()
 async def process_message(message: Message):
     await message.answer(
-        "Для взаимодействия с ботом используйте команды или кнопки меню.\n"
+        "ℹ️ Для взаимодействия с ботом используйте команды или кнопки меню.\n"
         "Введите /help для получения списка доступных команд."
     )
 
-# Функция для настройки и запуска вебхука (при необходимости)
-async def on_startup(app):
-    # Инициализация базы данных
-    await db.init()
-    
-    # Установка вебхука, если настроен
-    if WEBHOOK_HOST:
-        await bot.set_webhook(url=WEBHOOK_URL)
-        logger.info(f"Webhook set to {WEBHOOK_URL}")
-
-# Функция для остановки приложения
-async def on_shutdown(app):
-    # Закрытие соединения с базой данных
-    if hasattr(db, 'pool') and db.pool:
-        await db.pool.close()
-    
-    # Удаление вебхука при выключении
-    await bot.delete_webhook()
-
-# Функция для запуска бота (polling или webhook)
+# Функция запуска бота в long polling режиме
 async def main():
     # Инициализация базы данных
-    await db.init()
+    try:
+        await db.init()
+        logger.info("База данных успешно инициализирована")
+    except Exception as e:
+        logger.error(f"Ошибка при инициализации базы данных: {e}")
+        return
     
-    # Запуск бота в режиме long polling или webhook
-    if WEBHOOK_HOST:
-        # Настройка webhook
-        app = web.Application()
-        
-        # Настройка endpoint для вебхука
-        SimpleRequestHandler(
-            dispatcher=dp,
-            bot=bot,
-        ).register(app, path=WEBHOOK_PATH)
-        
-        # Добавление обработчиков запуска и остановки
-        app.on_startup.append(on_startup)
-        app.on_shutdown.append(on_shutdown)
-        
-        # Запуск web сервера
-        logger.info(f"Starting webhook on {WEBHOOK_HOST}{WEBHOOK_PATH}")
-        web.run_app(app, host="0.0.0.0", port=8443)
-    else:
-        # Запуск в режиме long polling
-        logger.info("Starting bot in long polling mode")
+    # Добавляем информацию о запуске
+    logger.info(f"Бот запущен в {'тестовом' if TEST_MODE else 'обычном'} режиме")
+    logger.info(f"Папка для хранения PDF: {PDF_STORAGE_PATH}")
+    
+    # Запуск бота в режиме long polling
+    try:
+        logger.info("Запуск бота в режиме long polling")
         await dp.start_polling(bot)
+    except Exception as e:
+        logger.error(f"Ошибка при запуске бота: {e}")
 
 if __name__ == "__main__":
     import asyncio
