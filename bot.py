@@ -5,9 +5,9 @@ import json
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional
 
-from aiogram import Bot, Dispatcher, Router, types
+from aiogram import Bot, Dispatcher, Router, types, F
 from aiogram.enums import ParseMode
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage  # Используем MemoryStorage вместо Redis
@@ -15,6 +15,7 @@ from aiogram.types import (
     Message, InlineKeyboardButton, InlineKeyboardMarkup, PreCheckoutQuery,
     LabeledPrice, FSInputFile
 )
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # Импортируем необходимые модули
 try:
@@ -24,14 +25,20 @@ except ImportError:
 
 from numerology_core import calculate_numerology, calculate_compatibility
 from interpret import send_to_n8n_for_interpretation
+
+# Попытка импорта генератора PDF
 try:
-    from pdf_generator_simple import generate_pdf
+    from text_report_generator import generate_pdf  # Сначала пробуем текстовый генератор
 except ImportError:
     try:
-        from pdf_generator import generate_pdf
+        from pdf_generator_simple import generate_pdf  # Затем простой PDF-генератор
     except ImportError:
-        logger.error("Не удалось импортировать модуль генерации PDF")
-        raise
+        try:
+            from pdf_generator import generate_pdf  # И только потом оригинальный PDF-генератор
+        except ImportError:
+            logger = logging.getLogger(__name__)
+            logger.error("Не удалось импортировать модуль генерации отчетов")
+            raise
 
 # Настройка логгирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -72,7 +79,7 @@ class UserStates(StatesGroup):
     waiting_for_partner_name = State()
 
 # Обработчик команды /start
-@router.message(Command("start"))
+@router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     user_id = message.from_user.id
     
@@ -82,18 +89,19 @@ async def cmd_start(message: Message, state: FSMContext):
         await db.create_user(user_id)
     
     # Приветственное сообщение
+    builder = InlineKeyboardBuilder()
+    builder.add(InlineKeyboardButton(text="✨ Сделать расчёт", callback_data="start_calculation"))
+    
     await message.answer(
         "👋 Привет! Я ИИ-Нумеролог. Могу рассчитать ваш нумерологический портрет и дать индивидуальные рекомендации.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✨ Сделать расчёт", callback_data="start_calculation")]
-        ])
+        reply_markup=builder.as_markup()
     )
     
     # Сброс состояния FSM
     await state.clear()
 
 # Обработчик кнопки "Сделать расчёт"
-@router.callback_query(lambda c: c.data == "start_calculation")
+@router.callback_query(F.data == "start_calculation")
 async def process_calculation_button(callback_query: types.CallbackQuery, state: FSMContext):
     # Подтверждение запроса
     await callback_query.answer()
@@ -156,30 +164,26 @@ async def process_name(message: Message, state: FSMContext):
     # Формирование и отправка мини-отчета
     mini_report_text = interpretation.get('mini_report', 'Извините, не удалось получить интерпретацию.')
     
-    buttons = [
-        [InlineKeyboardButton(text="📊 Полный PDF - 149 ₽", callback_data=f"buy_full_report:{report_id}")]
-    ]
+    builder = InlineKeyboardBuilder()
+    builder.add(InlineKeyboardButton(text="📊 Полный PDF - 149 ₽", callback_data=f"buy_full_report:{report_id}"))
     
     # В тестовом режиме добавляем кнопку "Получить бесплатно (тестовый режим)"
     if TEST_MODE:
-        buttons.append([
-            InlineKeyboardButton(
-                text="🔍 Получить бесплатно (тестовый режим)", 
-                callback_data=f"test_full_report:{report_id}"
-            )
-        ])
+        builder.add(InlineKeyboardButton(
+            text="🔍 Получить бесплатно (тестовый режим)", 
+            callback_data=f"test_full_report:{report_id}"
+        ))
     
     await message.answer(
         f"🌟 <b>Ваш мини-отчет:</b>\n\n{mini_report_text}",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
-        parse_mode=ParseMode.HTML
+        reply_markup=builder.as_markup()
     )
     
     # Сброс состояния FSM
     await state.clear()
 
 # Обработчик кнопки "Получить бесплатно (тестовый режим)"
-@router.callback_query(lambda c: c.data and c.data.startswith("test_full_report:"))
+@router.callback_query(F.data.startswith("test_full_report:"))
 async def process_test_full_report(callback_query: types.CallbackQuery):
     if not TEST_MODE:
         await callback_query.answer("⚠️ Тестовый режим отключен")
@@ -234,30 +238,27 @@ async def process_test_full_report(callback_query: types.CallbackQuery):
         await bot.send_document(callback_query.message.chat.id, pdf_file)
         
         # Предложение подписки
-        subscription_buttons = [
-            [InlineKeyboardButton(text="💎 Оформить подписку", callback_data="subscribe")]
-        ]
+        builder = InlineKeyboardBuilder()
+        builder.add(InlineKeyboardButton(text="💎 Оформить подписку", callback_data="subscribe"))
         
         # В тестовом режиме добавляем кнопку для бесплатной тестовой подписки
         if TEST_MODE:
-            subscription_buttons.append([
-                InlineKeyboardButton(
-                    text="🔔 Активировать бесплатно (тестовый режим)", 
-                    callback_data="test_subscribe"
-                )
-            ])
+            builder.add(InlineKeyboardButton(
+                text="🔔 Активировать бесплатно (тестовый режим)", 
+                callback_data="test_subscribe"
+            ))
         
         await callback_query.message.answer(
             "🌟 Хотите получать еженедельные нумерологические прогнозы?\n"
             "Оформите подписку всего за 299 ₽ в месяц!",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=subscription_buttons)
+            reply_markup=builder.as_markup()
         )
     except Exception as e:
         logger.error(f"Ошибка при отправке PDF: {e}")
         await callback_query.message.answer(f"❌ Произошла ошибка при отправке PDF: {e}")
 
 # Обработчик кнопки "Активировать бесплатно (тестовый режим)" для подписки
-@router.callback_query(lambda c: c.data == "test_subscribe")
+@router.callback_query(F.data == "test_subscribe")
 async def process_test_subscription(callback_query: types.CallbackQuery):
     if not TEST_MODE:
         await callback_query.answer("⚠️ Тестовый режим отключен")
@@ -300,7 +301,7 @@ async def process_test_subscription(callback_query: types.CallbackQuery):
             )
 
 # Обработчик кнопки "Оформить подписку" (платная версия)
-@router.callback_query(lambda c: c.data == "subscribe")
+@router.callback_query(F.data == "subscribe")
 async def process_subscription(callback_query: types.CallbackQuery):
     # Подтверждение запроса
     await callback_query.answer()
@@ -340,25 +341,7 @@ async def process_subscription(callback_query: types.CallbackQuery):
         prices=[LabeledPrice(label="Подписка на 1 месяц", amount=29900)],  # в копейках
         max_tip_amount=10000,
         suggested_tip_amounts=[5000, 10000],
-        start_parameter="subscription",
-        provider_data=None,
-        photo_url="https://example.com/subscription.jpg",
-        photo_size=512,
-        photo_width=512,
-        photo_height=512,
-        need_name=False,
-        need_phone_number=False,
-        need_email=False,
-        need_shipping_address=False,
-        send_phone_number_to_provider=False,
-        send_email_to_provider=False,
-        is_flexible=False,
-        disable_notification=False,
-        protect_content=False,
-        reply_to_message_id=None,
-        allow_sending_without_reply=True,
-        reply_markup=None,
-        request_timeout=15
+        start_parameter="subscription"
     )
 
 # Обработчик предварительной проверки платежа
@@ -367,7 +350,7 @@ async def process_pre_checkout_query(pre_checkout_query: PreCheckoutQuery):
     await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
 
 # Обработчик успешного платежа
-@router.message(lambda message: message.successful_payment)
+@router.message(F.successful_payment)
 async def process_successful_payment(message: Message):
     payment = message.successful_payment
     payload = payment.invoice_payload
@@ -457,12 +440,13 @@ async def process_full_report_payment(message: Message, order: Dict[str, Any]):
         await bot.send_document(message.chat.id, pdf_file)
         
         # Предложение подписки
+        builder = InlineKeyboardBuilder()
+        builder.add(InlineKeyboardButton(text="💎 Оформить подписку", callback_data="subscribe"))
+        
         await message.answer(
             "🌟 Хотите получать еженедельные нумерологические прогнозы?\n"
             "Оформите подписку всего за 299 ₽ в месяц!",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="💎 Оформить подписку", callback_data="subscribe")]
-            ])
+            reply_markup=builder.as_markup()
         )
     except Exception as e:
         logger.error(f"Ошибка при отправке PDF: {e}")
@@ -515,12 +499,13 @@ async def process_compatibility_payment(message: Message, order: Dict[str, Any])
         await bot.send_document(message.chat.id, pdf_file)
         
         # Предложение подписки
+        builder = InlineKeyboardBuilder()
+        builder.add(InlineKeyboardButton(text="💎 Оформить подписку", callback_data="subscribe"))
+        
         await message.answer(
             "🌟 Хотите получать еженедельные нумерологические прогнозы?\n"
             "Оформите подписку всего за 299 ₽ в месяц!",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="💎 Оформить подписку", callback_data="subscribe")]
-            ])
+            reply_markup=builder.as_markup()
         )
     except Exception as e:
         logger.error(f"Ошибка при отправке PDF: {e}")
@@ -574,7 +559,7 @@ async def cmd_report(message: Message):
         await message.answer("❓ Для начала работы с ботом отправьте команду /start")
         return
     
-    # Получение последнего отчета пользователя
+		# Получение последнего отчета пользователя
     report = await db.get_latest_user_report(user_id, "full")
     
     if not report or not report.get("pdf_url"):
@@ -616,28 +601,25 @@ async def cmd_subscribe(message: Message):
     
     if not subscription:
         # Если нет подписки, предлагаем оформить
-        buttons = [
-            [InlineKeyboardButton(text="💎 Оформить подписку", callback_data="subscribe")]
-        ]
+        builder = InlineKeyboardBuilder()
+        builder.add(InlineKeyboardButton(text="💎 Оформить подписку", callback_data="subscribe"))
         
         # В тестовом режиме добавляем кнопку для бесплатной тестовой подписки
         if TEST_MODE:
-            buttons.append([
-                InlineKeyboardButton(
-                    text="🔔 Активировать бесплатно (тестовый режим)", 
-                    callback_data="test_subscribe"
-                )
-            ])
+            builder.add(InlineKeyboardButton(
+                text="🔔 Активировать бесплатно (тестовый режим)", 
+                callback_data="test_subscribe"
+            ))
         
         await message.answer(
             "ℹ️ У вас нет активной подписки на еженедельные прогнозы.\n\n"
             "Стоимость подписки - 299 ₽ в месяц.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+            reply_markup=builder.as_markup()
         )
     else:
         # Если подписка есть, показываем её статус
         status = subscription["status"]
-        buttons = []
+        
         if status == "active":
             next_charge = subscription.get("next_charge")
             if isinstance(next_charge, str):
@@ -648,13 +630,14 @@ async def cmd_subscribe(message: Message):
             
             next_charge_str = next_charge.strftime("%d.%m.%Y") if next_charge else "неизвестно"
             
+            builder = InlineKeyboardBuilder()
+            builder.add(InlineKeyboardButton(text="❌ Отменить подписку", callback_data="cancel_subscription"))
+            
             await message.answer(
                 f"💎 У вас активная подписка на еженедельные прогнозы.\n\n"
                 f"Следующее списание: {next_charge_str}\n"
                 f"Стоимость: 299 ₽ в месяц.",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="❌ Отменить подписку", callback_data="cancel_subscription")]
-                ])
+                reply_markup=builder.as_markup()
             )
         elif status == "trial":
             trial_end = subscription.get("trial_end")
@@ -666,38 +649,34 @@ async def cmd_subscribe(message: Message):
             
             trial_end_str = trial_end.strftime("%d.%m.%Y") if trial_end else "неизвестно"
             
-            buttons = [
-                [InlineKeyboardButton(text="💎 Оформить полную подписку", callback_data="subscribe")]
-            ]
+            builder = InlineKeyboardBuilder()
+            builder.add(InlineKeyboardButton(text="💎 Оформить полную подписку", callback_data="subscribe"))
             
             await message.answer(
                 f"🔍 У вас активна пробная подписка на еженедельные прогнозы.\n\n"
                 f"Срок действия: до {trial_end_str}\n\n"
                 f"После окончания пробного периода подписка будет отключена.",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+                reply_markup=builder.as_markup()
             )
         elif status == "canceled":
-            buttons = [
-                [InlineKeyboardButton(text="🔄 Возобновить подписку", callback_data="subscribe")]
-            ]
+            builder = InlineKeyboardBuilder()
+            builder.add(InlineKeyboardButton(text="🔄 Возобновить подписку", callback_data="subscribe"))
             
             # В тестовом режиме добавляем кнопку для бесплатной тестовой подписки
             if TEST_MODE:
-                buttons.append([
-                    InlineKeyboardButton(
-                        text="🔔 Активировать бесплатно (тестовый режим)", 
-                        callback_data="test_subscribe"
-                    )
-                ])
+                builder.add(InlineKeyboardButton(
+                    text="🔔 Активировать бесплатно (тестовый режим)", 
+                    callback_data="test_subscribe"
+                ))
             
             await message.answer(
                 "🚫 Ваша подписка на еженедельные прогнозы отменена.\n\n"
                 "Вы можете возобновить её в любой момент.",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+                reply_markup=builder.as_markup()
             )
 
 # Обработчик кнопки "Отменить подписку"
-@router.callback_query(lambda c: c.data == "cancel_subscription")
+@router.callback_query(F.data == "cancel_subscription")
 async def process_cancel_subscription(callback_query: types.CallbackQuery):
     # Подтверждение запроса
     await callback_query.answer()
@@ -816,32 +795,29 @@ async def process_partner_name(message: Message, state: FSMContext):
         f"🌟 Ваша совместимость с {partner_fio}: {score_percent}%"
     )
     
-    buttons = [
-        [InlineKeyboardButton(
-            text="📊 Полный отчет о совместимости - 199 ₽", 
-            callback_data=f"buy_compatibility:{report_id}"
-        )]
-    ]
+    builder = InlineKeyboardBuilder()
+    builder.add(InlineKeyboardButton(
+        text="📊 Полный отчет о совместимости - 199 ₽", 
+        callback_data=f"buy_compatibility:{report_id}"
+    ))
     
     # В тестовом режиме добавляем кнопку "Получить бесплатно (тестовый режим)"
     if TEST_MODE:
-        buttons.append([
-            InlineKeyboardButton(
-                text="🔍 Получить бесплатно (тестовый режим)", 
-                callback_data=f"test_compatibility:{report_id}"
-            )
-        ])
+        builder.add(InlineKeyboardButton(
+            text="🔍 Получить бесплатно (тестовый режим)", 
+            callback_data=f"test_compatibility:{report_id}"
+        ))
     
     await message.answer(
         f"{mini_report_text}",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+        reply_markup=builder.as_markup()
     )
     
     # Сброс состояния FSM
     await state.clear()
 
 # Обработчик кнопки "Получить бесплатно (тестовый режим)" для отчета о совместимости
-@router.callback_query(lambda c: c.data and c.data.startswith("test_compatibility:"))
+@router.callback_query(F.data.startswith("test_compatibility:"))
 async def process_test_compatibility(callback_query: types.CallbackQuery):
     if not TEST_MODE:
         await callback_query.answer("⚠️ Тестовый режим отключен")
@@ -899,7 +875,7 @@ async def process_test_compatibility(callback_query: types.CallbackQuery):
         await callback_query.message.answer(f"❌ Произошла ошибка при отправке PDF: {e}")
 
 # Обработчик кнопки "Полный отчет о совместимости - 199 ₽"
-@router.callback_query(lambda c: c.data and c.data.startswith("buy_compatibility:"))
+@router.callback_query(F.data.startswith("buy_compatibility:"))
 async def process_buy_compatibility(callback_query: types.CallbackQuery):
     # Подтверждение запроса
     await callback_query.answer()
@@ -949,29 +925,11 @@ async def process_buy_compatibility(callback_query: types.CallbackQuery):
         prices=[LabeledPrice(label="Отчет о совместимости", amount=19900)],  # в копейках
         max_tip_amount=5000,
         suggested_tip_amounts=[2000, 5000],
-        start_parameter="compatibility",
-        provider_data=None,
-        photo_url="https://example.com/compatibility.jpg",
-        photo_size=512,
-        photo_width=512,
-        photo_height=512,
-        need_name=False,
-        need_phone_number=False,
-        need_email=False,
-        need_shipping_address=False,
-        send_phone_number_to_provider=False,
-        send_email_to_provider=False,
-        is_flexible=False,
-        disable_notification=False,
-        protect_content=False,
-        reply_to_message_id=None,
-        allow_sending_without_reply=True,
-        reply_markup=None,
-        request_timeout=15
+        start_parameter="compatibility"
     )
 
 # Обработчик кнопки "Полный PDF - 149 ₽"
-@router.callback_query(lambda c: c.data and c.data.startswith("buy_full_report:"))
+@router.callback_query(F.data.startswith("buy_full_report:"))
 async def process_buy_full_report(callback_query: types.CallbackQuery):
     # Подтверждение запроса
     await callback_query.answer()
@@ -1021,25 +979,7 @@ async def process_buy_full_report(callback_query: types.CallbackQuery):
         prices=[LabeledPrice(label="Полный PDF-отчет", amount=14900)],  # в копейках
         max_tip_amount=5000,
         suggested_tip_amounts=[1000, 3000, 5000],
-        start_parameter="full_report",
-        provider_data=None,
-        photo_url="https://example.com/full_report.jpg",
-        photo_size=512,
-        photo_width=512,
-        photo_height=512,
-        need_name=False,
-        need_phone_number=False,
-        need_email=False,
-        need_shipping_address=False,
-        send_phone_number_to_provider=False,
-        send_email_to_provider=False,
-        is_flexible=False,
-        disable_notification=False,
-        protect_content=False,
-        reply_to_message_id=None,
-        allow_sending_without_reply=True,
-        reply_markup=None,
-        request_timeout=15
+        start_parameter="full_report"
     )
 
 # Обработчик команды /help
@@ -1064,7 +1004,7 @@ async def cmd_help(message: Message):
         "По всем вопросам обращайтесь к администратору: @admin_username"
     )
     
-    await message.answer(help_text, parse_mode=ParseMode.HTML)
+    await message.answer(help_text)
 
 # Обработчик команды /settings
 @router.message(Command("settings"))
@@ -1085,21 +1025,19 @@ async def cmd_settings(message: Message):
     lang_text = "🇷🇺 Русский" if current_lang == "ru" else "🇬🇧 English"
     push_text = "Включены ✅" if push_enabled else "Отключены ❌"
     
-    settings_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"Язык: {lang_text}", callback_data="toggle_lang")],
-        [InlineKeyboardButton(text=f"Уведомления: {push_text}", callback_data="toggle_push")]
-    ])
+    builder = InlineKeyboardBuilder()
+    builder.add(InlineKeyboardButton(text=f"Язык: {lang_text}", callback_data="toggle_lang"))
+    builder.add(InlineKeyboardButton(text=f"Уведомления: {push_text}", callback_data="toggle_push"))
     
     await message.answer(
         "⚙️ <b>Настройки</b>\n\n"
         f"Текущий язык: {lang_text}\n"
         f"Уведомления: {push_text}",
-        reply_markup=settings_keyboard,
-        parse_mode=ParseMode.HTML
+        reply_markup=builder.as_markup()
     )
 
 # Обработчик кнопки переключения языка
-@router.callback_query(lambda c: c.data == "toggle_lang")
+@router.callback_query(F.data == "toggle_lang")
 async def toggle_lang(callback_query: types.CallbackQuery):
     # Подтверждение запроса
     await callback_query.answer()
@@ -1124,23 +1062,21 @@ async def toggle_lang(callback_query: types.CallbackQuery):
         lang_text = "🇷🇺 Русский" if new_lang == "ru" else "🇬🇧 English"
         push_text = "Включены ✅" if push_enabled else "Отключены ❌"
         
-        settings_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=f"Язык: {lang_text}", callback_data="toggle_lang")],
-            [InlineKeyboardButton(text=f"Уведомления: {push_text}", callback_data="toggle_push")]
-        ])
+        builder = InlineKeyboardBuilder()
+        builder.add(InlineKeyboardButton(text=f"Язык: {lang_text}", callback_data="toggle_lang"))
+        builder.add(InlineKeyboardButton(text=f"Уведомления: {push_text}", callback_data="toggle_push"))
         
         await callback_query.message.edit_text(
             "⚙️ <b>Настройки</b>\n\n"
             f"Текущий язык: {lang_text}\n"
             f"Уведомления: {push_text}",
-            reply_markup=settings_keyboard,
-            parse_mode=ParseMode.HTML
+            reply_markup=builder.as_markup()
         )
     else:
         await callback_query.message.answer("❌ Произошла ошибка при обновлении настроек.")
 
 # Обработчик кнопки переключения уведомлений
-@router.callback_query(lambda c: c.data == "toggle_push")
+@router.callback_query(F.data == "toggle_push")
 async def toggle_push(callback_query: types.CallbackQuery):
     # Подтверждение запроса
     await callback_query.answer()
@@ -1165,23 +1101,21 @@ async def toggle_push(callback_query: types.CallbackQuery):
         lang_text = "🇷🇺 Русский" if current_lang == "ru" else "🇬🇧 English"
         push_text = "Включены ✅" if new_push else "Отключены ❌"
         
-        settings_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=f"Язык: {lang_text}", callback_data="toggle_lang")],
-            [InlineKeyboardButton(text=f"Уведомления: {push_text}", callback_data="toggle_push")]
-        ])
+        builder = InlineKeyboardBuilder()
+        builder.add(InlineKeyboardButton(text=f"Язык: {lang_text}", callback_data="toggle_lang"))
+        builder.add(InlineKeyboardButton(text=f"Уведомления: {push_text}", callback_data="toggle_push"))
         
         await callback_query.message.edit_text(
             "⚙️ <b>Настройки</b>\n\n"
             f"Текущий язык: {lang_text}\n"
             f"Уведомления: {push_text}",
-            reply_markup=settings_keyboard,
-            parse_mode=ParseMode.HTML
+            reply_markup=builder.as_markup()
         )
     else:
         await callback_query.message.answer("❌ Произошла ошибка при обновлении настроек.")
 
-# Обработчик неизвестных команд
-@router.message(Command())
+# Обработчик для всех остальных команд (неизвестных)
+@router.message(lambda message: message.text and message.text.startswith("/"))
 async def unknown_command(message: Message):
     await message.answer(
         "❓ Неизвестная команда. Введите /help для получения списка доступных команд."
