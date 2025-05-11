@@ -4,14 +4,13 @@
 В текущей версии работает в автономном режиме, генерируя ответы локально.
 """
 
-# Обновленный код для interpret.py для подключения к локальному n8n
-
-# Обновленный код для interpret.py для локального n8n
+# interpret.py (обновленная версия)
 
 import aiohttp
 import json
 import logging
 import os
+import traceback
 from typing import Dict, Any, Optional, Union
 
 # Настройка логгирования
@@ -21,41 +20,77 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# URL для интеграции с n8n (локальный)
+# URL для интеграции с n8n (старый URL, оставлен для совместимости)
 N8N_BASE_URL = os.getenv("N8N_BASE_URL", "http://localhost:5678")
-# Используем конкретный webhook URL
 N8N_WEBHOOK_URL = f"{N8N_BASE_URL}/webhook/c4f6a246-0e5f-4a92-b901-8018c98c11ff"
+
+# URL для интеграции с новым внешним webhook
+EXTERNAL_WEBHOOK_URL = os.getenv("EXTERNAL_WEBHOOK_URL", "https://nnikochann.ru/webhook/numero_post_bot")
 
 # Таймаут для запросов (в секундах)
 REQUEST_TIMEOUT = 60
 
-# Режим работы: изменен для реального взаимодействия с n8n
+# Режим работы: используем внешний webhook
 AUTONOMOUS_MODE = os.getenv("MOCK_N8N", "false").lower() == "true"
+USE_EXTERNAL_WEBHOOK = os.getenv("USE_EXTERNAL_WEBHOOK", "true").lower() == "true"
 TEST_MODE = os.getenv("TEST_MODE", "true").lower() == "true"
+
+logger.info(f"interpret.py: настройки модуля:")
+logger.info(f"N8N_BASE_URL: {N8N_BASE_URL}")
+logger.info(f"N8N_WEBHOOK_URL: {N8N_WEBHOOK_URL}")
+logger.info(f"EXTERNAL_WEBHOOK_URL: {EXTERNAL_WEBHOOK_URL}")
+logger.info(f"AUTONOMOUS_MODE: {AUTONOMOUS_MODE}")
+logger.info(f"USE_EXTERNAL_WEBHOOK: {USE_EXTERNAL_WEBHOOK}")
+logger.info(f"TEST_MODE: {TEST_MODE}")
 
 
 async def send_to_n8n(webhook_url: str, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
-    Отправляет данные на webhook n8n и возвращает ответ.
+    Отправляет данные на webhook n8n или внешний webhook и возвращает ответ.
+    В автономном режиме генерирует ответы локально.
+    
+    Args:
+        webhook_url: URL вебхука (не используется при USE_EXTERNAL_WEBHOOK=True)
+        data: Словарь с данными для отправки
+        
+    Returns:
+        Ответ от webhook в виде словаря или локально сгенерированные данные
     """
     if AUTONOMOUS_MODE:
         logger.info(f"Автономный режим: Генерация данных для запроса типа {data.get('report_type', 'unknown')}")
         return generate_test_response(webhook_url, data)
 
-    # Используем единый webhook URL для всех запросов
-    actual_webhook_url = N8N_WEBHOOK_URL
+    # Определяем URL, который будем использовать
+    actual_webhook_url = EXTERNAL_WEBHOOK_URL if USE_EXTERNAL_WEBHOOK else webhook_url
     
-    # Проверка доступности n8n
-    logger.info(f"Отправка запроса на n8n webhook для типа: {data.get('report_type', 'unknown')}")
-    logger.info(f"URL запроса: {actual_webhook_url}")
-    logger.info(f"Данные запроса: {json.dumps(data, ensure_ascii=False, indent=2)}")
+    # Добавляем тип отчета в данные, если его нет
+    if 'report_type' not in data and webhook_url:
+        if 'mini-report' in webhook_url:
+            data['report_type'] = 'mini'
+        elif 'full-report' in webhook_url:
+            data['report_type'] = 'full'
+        elif 'compatibility' in webhook_url:
+            data['report_type'] = 'compatibility'
+        elif 'weekly-forecast' in webhook_url:
+            data['report_type'] = 'weekly'
 
-    # Попытка отправки реального запроса к n8n
+    # Проверка доступности webhook
+    logger.info(f"Отправка запроса на webhook для типа: {data.get('report_type', 'unknown')}")
+    logger.info(f"URL запроса: {actual_webhook_url}")
+    logger.debug(f"Данные запроса: {json.dumps(data, ensure_ascii=False, indent=2)}")
+
+    # Попытка отправки реального запроса к webhook
     try:
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+        
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 actual_webhook_url,
                 json=data,
+                headers=headers,
                 timeout=REQUEST_TIMEOUT
             ) as response:
                 status = response.status
@@ -64,8 +99,8 @@ async def send_to_n8n(webhook_url: str, data: Dict[str, Any]) -> Optional[Dict[s
                 if status == 200:
                     try:
                         result = await response.json()
-                        logger.info(f"Успешный ответ от n8n webhook")
-                        logger.info(f"Структура ответа: {json.dumps(result, ensure_ascii=False, indent=2)}")
+                        logger.info(f"Успешный ответ от webhook")
+                        logger.debug(f"Структура ответа: {json.dumps(result, ensure_ascii=False, indent=2)}")
                         return result
                     except Exception as json_error:
                         text = await response.text()
@@ -74,25 +109,48 @@ async def send_to_n8n(webhook_url: str, data: Dict[str, Any]) -> Optional[Dict[s
                         return None
                 else:
                     error_text = await response.text()
-                    logger.error(f"Ошибка от n8n webhook: статус {status}, ответ: {error_text}")
-                    return None
+                    logger.error(f"Ошибка от webhook: статус {status}, ответ: {error_text}")
+                    
+                    # Если ответ не успешный, генерируем тестовые данные вместо него
+                    logger.warning("Использование тестовых данных из-за ошибки ответа")
+                    return generate_test_response(webhook_url, data)
+                    
+    except aiohttp.ClientError as e:
+        logger.error(f"Ошибка подключения к webhook: {e}")
+        logger.error(f"Трассировка: {traceback.format_exc()}")
+        # В случае ошибки подключения генерируем тестовые данные
+        logger.warning("Использование тестовых данных из-за ошибки подключения")
+        return generate_test_response(webhook_url, data)
     except Exception as e:
-        logger.error(f"Ошибка при отправке запроса к n8n: {e}")
-        return None
+        logger.error(f"Непредвиденная ошибка при отправке данных: {e}")
+        logger.error(f"Трассировка: {traceback.format_exc()}")
+        # В случае любой другой ошибки генерируем тестовые данные
+        logger.warning("Использование тестовых данных из-за непредвиденной ошибки")
+        return generate_test_response(webhook_url, data)
+
 
 async def send_to_n8n_for_interpretation(data: Dict[str, Any], report_type: str) -> Dict[str, Any]:
     """
-    Отправляет данные на интерпретацию через n8n в зависимости от типа отчета.
+    Отправляет данные на интерпретацию через n8n или внешний webhook в зависимости от типа отчета.
+    
+    Args:
+        data: Словарь с нумерологическими расчетами
+        report_type: Тип отчета ('mini', 'full', 'compatibility_mini', 'compatibility')
+        
+    Returns:
+        Словарь с результатами интерпретации или пустой словарь в случае ошибки
     """
     try:
         # Добавляем тип отчета в данные
         request_data = {**data, 'report_type': report_type}
         
         logger.info(f"Запрос интерпретации для отчета типа: {report_type}")
-        result = await send_to_n8n(N8N_WEBHOOK_URL, request_data)
+        
+        # Отправляем запрос
+        result = await send_to_n8n("", request_data)
         
         # Добавьте отладочный вывод
-        logger.info(f"Получен ответ от n8n: {json.dumps(result, ensure_ascii=False) if result else 'None'}")
+        logger.info(f"Получен ответ: {json.dumps(result, ensure_ascii=False)[:200] if result else 'None'}...")
         
         if not result:
             logger.error(f"Не удалось получить интерпретацию для отчета типа: {report_type}")
@@ -107,18 +165,60 @@ async def send_to_n8n_for_interpretation(data: Dict[str, Any], report_type: str)
             else:
                 return {}
         
-        # Проверьте, содержит ли ответ ожидаемые ключи
-        if report_type == 'mini' and 'mini_report' not in result:
-            logger.error(f"Ответ от n8n не содержит ожидаемого ключа 'mini_report': {json.dumps(result, ensure_ascii=False)}")
-            return {"mini_report": "Извините, не удалось получить корректную интерпретацию. Пожалуйста, попробуйте позже."}
+        # Проверка наличия ожидаемых ключей в ответе
+        expected_key = None
+        if report_type == 'mini':
+            expected_key = 'mini_report'
+        elif report_type == 'full':
+            expected_key = 'full_report'
+        elif report_type == 'compatibility_mini':
+            expected_key = 'compatibility_mini_report'
+        elif report_type == 'compatibility':
+            expected_key = 'compatibility_report'
+        
+        if expected_key and expected_key not in result:
+            logger.warning(f"Ответ не содержит ожидаемого ключа '{expected_key}'. Попытка найти альтернативные ключи...")
+            
+            # Проверка альтернативных ключей или перенос данных из доступных ключей
+            if 'message' in result:
+                if report_type == 'mini':
+                    return {"mini_report": result['message']}
+                elif report_type == 'compatibility_mini':
+                    return {"compatibility_mini_report": result['message']}
+            
+            # Если есть текстовое поле 'text' или 'content'
+            for key in ['text', 'content', 'response', 'result']:
+                if key in result:
+                    if report_type == 'mini':
+                        return {"mini_report": result[key]}
+                    elif report_type == 'full':
+                        return {"full_report": {"introduction": result[key]}}
+                    elif report_type == 'compatibility_mini':
+                        return {"compatibility_mini_report": result[key]}
+                    elif report_type == 'compatibility':
+                        return {"compatibility_report": {"intro": result[key]}}
+            
+            logger.error(f"Не удалось найти подходящий ключ в ответе: {json.dumps(result, ensure_ascii=False)}")
+            
+            # Возвращаем весь ответ как есть, возможно, он имеет правильную структуру
+            return result
                 
         return result
     except Exception as e:
         logger.error(f"Ошибка в send_to_n8n_for_interpretation: {e}")
         logger.error(f"Трассировка: {traceback.format_exc()}")
-        return {}
-# Оставьте существующую функцию generate_test_response как есть
-# ...
+        
+        # Возвращаем заполнитель в зависимости от типа отчета
+        if report_type == 'mini':
+            return {"mini_report": "Извините, произошла ошибка при получении интерпретации. Пожалуйста, попробуйте позже."}
+        elif report_type == 'full':
+            return {"full_report": {"introduction": "Извините, произошла ошибка при получении интерпретации."}}
+        elif report_type == 'compatibility_mini':
+            return {"compatibility_mini_report": "Извините, произошла ошибка при получении интерпретации."}
+        elif report_type == 'compatibility':
+            return {"compatibility_report": {"introduction": "Извините, произошла ошибка при получении интерпретации."}}
+        else:
+            return {}
 
 def generate_test_response(webhook_url: str, data: Dict[str, Any]) -> Dict[str, Any]:
     """
