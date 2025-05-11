@@ -28,12 +28,14 @@ from interpret import send_to_n8n_for_interpretation
 
 # Попытка импорта генератора PDF
 # Для текстовых отчетов (если проблема с PDF не решена):
-from text_report_generator import generate_pdf as generate_report
+from text_report_generator import generate_pdf
 
 # Настройка логгирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Настройки вебхуков и API
+EXTERNAL_WEBHOOK_URL = os.getenv("EXTERNAL_WEBHOOK_URL", "https://nnikochann.ru/webhook/numero_post_bot")
 # Загрузка переменных окружения
 try:
     from dotenv import load_dotenv
