@@ -27,18 +27,8 @@ from numerology_core import calculate_numerology, calculate_compatibility
 from interpret import send_to_n8n_for_interpretation
 
 # Попытка импорта генератора PDF
-try:
-    from text_report_generator import generate_pdf  # Сначала пробуем текстовый генератор
-except ImportError:
-    try:
-        from pdf_generator_simple import generate_pdf  # Затем простой PDF-генератор
-    except ImportError:
-        try:
-            from pdf_generator import generate_pdf  # И только потом оригинальный PDF-генератор
-        except ImportError:
-            logger = logging.getLogger(__name__)
-            logger.error("Не удалось импортировать модуль генерации отчетов")
-            raise
+# Для текстовых отчетов (если проблема с PDF не решена):
+from text_report_generator import generate_pdf as generate_report
 
 # Настройка логгирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
