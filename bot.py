@@ -54,7 +54,8 @@ TEST_MODE = os.getenv("TEST_MODE", "true").lower() == "true"
 os.makedirs(PDF_STORAGE_PATH, exist_ok=True)
 
 # Инициализация бота и диспетчера с MemoryStorage
-bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+from aiogram.client.default import DefaultBotProperties
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 storage = MemoryStorage()  # Используем хранилище в памяти вместо Redis
 dp = Dispatcher(storage=storage)
 router = Router()
