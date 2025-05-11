@@ -25,9 +25,13 @@ except ImportError:
 from numerology_core import calculate_numerology, calculate_compatibility
 from interpret import send_to_n8n_for_interpretation
 try:
-    from pdf_generator import generate_pdf
-except ImportError:
     from pdf_generator_simple import generate_pdf
+except ImportError:
+    try:
+        from pdf_generator import generate_pdf
+    except ImportError:
+        logger.error("Не удалось импортировать модуль генерации PDF")
+        raise
 
 # Настройка логгирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
