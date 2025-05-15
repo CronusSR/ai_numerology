@@ -26,9 +26,18 @@ except ImportError:
 from numerology_core import calculate_numerology, calculate_compatibility
 from interpret import send_to_n8n_for_interpretation
 
-# Попытка импорта генератора PDF
-# Для текстовых отчетов (если проблема с PDF не решена):
-from text_report_generator import generate_pdf
+try:
+    from pdf_generator import generate_pdf
+    logger.info("Используется генератор PDF из pdf_generator.py")
+except ImportError:
+    try:
+        from text_report_generator import generate_pdf
+        logger.info("Используется генератор отчетов из text_report_generator.py")
+    except ImportError:
+        logger.error("Не найден ни один модуль для генерации отчетов!")
+        def generate_pdf(user_data, numerology_data, interpretation_data, report_type='full'):
+            logger.error("Функция генерации отчетов недоступна!")
+            return None
 
 # Настройка логгирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -224,10 +233,38 @@ async def process_test_full_report(callback_query: types.CallbackQuery):
     # Отправка PDF пользователю
     await callback_query.message.answer("✅ Ваш полный отчет готов (тестовый режим).")
     
+		 
     try:
-        # Скачивание PDF и отправка пользователю
-        pdf_file = FSInputFile(pdf_path, filename="numerology_report.pdf")
-        await bot.send_document(callback_query.message.chat.id, pdf_file)
+        if pdf_path and os.path.exists(pdf_path):
+            file_ext = os.path.splitext(pdf_path)[1].lower()
+            if file_ext == '.pdf':
+                # Отправляем PDF
+                pdf_file = FSInputFile(pdf_path, filename="numerology_report.pdf")
+                await bot.send_document(callback_query.message.chat.id, pdf_file)
+            elif file_ext == '.txt':
+                # Отправляем текстовый файл
+                txt_file = FSInputFile(pdf_path, filename="numerology_report.txt")
+                await bot.send_document(callback_query.message.chat.id, txt_file)
+            
+                # Если это текстовый файл, можно также отправить его содержимое сообщением
+                try:
+                    with open(pdf_path, 'r', encoding='utf-8') as f:
+                        txt_content = f.read()
+                        # Если содержимое слишком длинное, отправляем только начало
+                        if len(txt_content) > 4000:
+                            txt_content = txt_content[:4000] + "\n...\n(полная версия в файле)"
+                        await callback_query.message.answer(txt_content)
+                except Exception as read_error:
+                    logger.error(f"Ошибка при чтении текстового отчета: {read_error}")
+            else:
+                # Отправляем любой другой тип файла
+                other_file = FSInputFile(pdf_path, filename=f"numerology_report{file_ext}")
+                await bot.send_document(callback_query.message.chat.id, other_file)
+        else:
+            await callback_query.message.answer("❌ Файл отчета не найден или не был создан.")
+    except Exception as e:
+        logger.error(f"Ошибка при отправке отчета: {e}")
+        await callback_query.message.answer(f"❌ Произошла ошибка при отправке отчета: {e}")
         
         # Предложение подписки
         builder = InlineKeyboardBuilder()
