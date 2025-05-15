@@ -12,6 +12,21 @@ from typing import Dict, Any, Optional, Union
 import jinja2
 from weasyprint import HTML, CSS
 
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+
+# Регистрация шрифта с поддержкой кириллицы
+try:
+    pdfmetrics.registerFont(TTFont('DejaVuSans', 'DejaVuSans.ttf'))
+    FONT_NAME = 'DejaVuSans'
+except:
+    # Если шрифт не найден, используем стандартный
+    FONT_NAME = 'Helvetica'
+    logger.warning("Шрифт DejaVuSans не найден, используется Helvetica (без поддержки кириллицы)")
+
+# И при создании стилей
+normal_style = ParagraphStyle(name='Normal', fontName=FONT_NAME, fontSize=10)
+title_style = ParagraphStyle(name='Title', fontName=FONT_NAME, fontSize=18, alignment=1)
 # Настройка логгирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
