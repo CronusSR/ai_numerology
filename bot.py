@@ -26,26 +26,29 @@ except ImportError:
 from numerology_core import calculate_numerology, calculate_compatibility
 from interpret import send_to_n8n_for_interpretation
 
-# В начале файла импортируем новый модуль
-try:
-    from pdf_generator_improved import generate_pdf
-    logger.info("Используется улучшенный генератор PDF")
-except ImportError:
-    try:
-        from text_report_generator import generate_pdf
-        logger.info("Используется текстовый генератор отчетов")
-    except ImportError:
-        try:
-            from pdf_generator import generate_pdf
-            logger.info("Используется оригинальный генератор PDF")
-        except ImportError:
-            logger.error("Не удалось импортировать модуль генерации отчетов")
-            raise
 
 # Настройка логгирования
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# В начале файла bot.py
+try:
+    # Попытка импорта простого генератора PDF с reportlab
+    from pdf_generator_simple import generate_pdf
+    logger.info("Используется простой генератор PDF с reportlab")
+except ImportError:
+    try:
+        # Попытка импорта текстового генератора
+        from text_report_generator import generate_pdf
+        logger.info("Используется текстовый генератор отчетов")
+    except ImportError:
+        try:
+            # И только потом пытаемся использовать weasyprint
+            from pdf_generator import generate_pdf
+            logger.info("Используется оригинальный генератор PDF")
+        except ImportError:
+            logger.error("Не удалось импортировать модуль генерации отчетов")
+            raise
 # Настройки вебхуков и API
 EXTERNAL_WEBHOOK_URL = os.getenv("EXTERNAL_WEBHOOK_URL", "https://nnikochann.ru/webhook/numero_post_bot")
 # Загрузка переменных окружения
