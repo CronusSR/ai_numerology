@@ -1,11 +1,4 @@
-"""
-Модуль для интеграции с n8n и ИИ для интерпретации нумерологических расчетов.
-Предоставляет функции для отправки данных расчетов на интерпретацию и получения результатов.
-В текущей версии работает в автономном режиме, генерируя ответы локально.
-"""
-
-# interpret.py (обновленная версия для работы с текстовыми ответами)
-
+# interpret.py - обновленный модуль для интеграции с n8n
 import aiohttp
 import json
 import logging
@@ -20,22 +13,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# URL для интеграции с n8n (старый URL, оставлен для совместимости)
+# URL для интеграции с n8n
 N8N_BASE_URL = os.getenv("N8N_BASE_URL", "http://localhost:5678")
-N8N_WEBHOOK_URL = f"{N8N_BASE_URL}/webhook/c4f6a246-0e5f-4a92-b901-8018c98c11ff"
+N8N_WEBHOOK_URL = f"{N8N_BASE_URL}/webhook/numerology"
 
-# URL для интеграции с новым внешним webhook
+# URL для интеграции с внешним webhook
 EXTERNAL_WEBHOOK_URL = os.getenv("EXTERNAL_WEBHOOK_URL", "https://nnikochann.ru/webhook/numero_post_bot")
 
 # Таймаут для запросов (в секундах)
 REQUEST_TIMEOUT = 60
 
-# Режим работы: используем внешний webhook
+# Режим работы и настройки
 AUTONOMOUS_MODE = os.getenv("MOCK_N8N", "false").lower() == "true"
 USE_EXTERNAL_WEBHOOK = os.getenv("USE_EXTERNAL_WEBHOOK", "true").lower() == "true"
 TEST_MODE = os.getenv("TEST_MODE", "true").lower() == "true"
-
-# Ожидается ли текстовый ответ вместо JSON
 EXPECT_TEXT_RESPONSE = os.getenv("EXPECT_TEXT_RESPONSE", "true").lower() == "true"
 
 logger.info(f"interpret.py: настройки модуля:")
@@ -46,7 +37,6 @@ logger.info(f"AUTONOMOUS_MODE: {AUTONOMOUS_MODE}")
 logger.info(f"USE_EXTERNAL_WEBHOOK: {USE_EXTERNAL_WEBHOOK}")
 logger.info(f"EXPECT_TEXT_RESPONSE: {EXPECT_TEXT_RESPONSE}")
 logger.info(f"TEST_MODE: {TEST_MODE}")
-
 
 async def send_to_n8n(webhook_url: str, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
@@ -122,6 +112,9 @@ async def send_to_n8n(webhook_url: str, data: Dict[str, Any]) -> Optional[Dict[s
                         # Форматируем текстовый ответ в структуру, ожидаемую ботом
                         report_type = data.get('report_type', 'unknown')
                         
+                        # Импортируем функции парсинга из модуля numerology_core
+                        from numerology_core import parse_text_to_full_report, parse_text_to_compatibility_report
+                        
                         if report_type == 'mini':
                             return {"mini_report": text}
                         elif report_type == 'full':
@@ -161,64 +154,6 @@ async def send_to_n8n(webhook_url: str, data: Dict[str, Any]) -> Optional[Dict[s
         return generate_test_response(webhook_url, data)
 
 
-def parse_text_to_full_report(text: str) -> Dict[str, str]:
-    """
-    Преобразует текстовый ответ в структурированный формат полного отчета.
-    """
-    # Создаем структуру по умолчанию
-    full_report = {
-        "introduction": "Ваш персональный нумерологический анализ.",
-        "life_path_interpretation": "Интерпретация числа жизненного пути.",
-        "expression_interpretation": "Интерпретация числа выражения.",
-        "soul_interpretation": "Интерпретация числа души.",
-        "personality_interpretation": "Интерпретация числа личности.",
-        "life_path_detailed": "Подробный анализ числа жизненного пути.",
-        "expression_detailed": "Подробный анализ числа выражения.",
-        "soul_detailed": "Подробный анализ числа души.",
-        "personality_detailed": "Подробный анализ числа личности.",
-        "forecast": "Прогноз на ближайшее время.",
-        "recommendations": "Рекомендации для вашего развития."
-    }
-    
-    # Проверяем, не пустой ли текст
-    if not text or len(text) < 10:
-        # Если текст слишком короткий, возвращаем структуру по умолчанию
-        full_report["introduction"] = text if text else "Извините, не удалось получить интерпретацию."
-        return full_report
-    
-    # Если текст содержательный, просто помещаем его в introduction
-    # В будущем здесь можно добавить более сложную логику разбора текста на разделы
-    full_report["introduction"] = text
-    
-    return full_report
-
-
-def parse_text_to_compatibility_report(text: str) -> Dict[str, Any]:
-    """
-    Преобразует текстовый ответ в структурированный формат отчета о совместимости.
-    """
-    # Создаем структуру по умолчанию
-    compatibility_report = {
-        "intro": "Анализ совместимости.",
-        "score": 75,  # По умолчанию 75%
-        "strengths": "Сильные стороны отношений.",
-        "challenges": "Возможные трудности.",
-        "recommendations": "Рекомендации для улучшения отношений."
-    }
-    
-    # Проверяем, не пустой ли текст
-    if not text or len(text) < 10:
-        # Если текст слишком короткий, возвращаем структуру по умолчанию
-        compatibility_report["intro"] = text if text else "Извините, не удалось получить интерпретацию."
-        return compatibility_report
-    
-    # Если текст содержательный, просто помещаем его в intro
-    # В будущем здесь можно добавить более сложную логику разбора текста на разделы
-    compatibility_report["intro"] = text
-    
-    return compatibility_report
-
-
 async def send_to_n8n_for_interpretation(data: Dict[str, Any], report_type: str) -> Dict[str, Any]:
     """
     Отправляет данные на интерпретацию через n8n или внешний webhook в зависимости от типа отчета.
@@ -233,6 +168,22 @@ async def send_to_n8n_for_interpretation(data: Dict[str, Any], report_type: str)
     try:
         # Добавляем тип отчета в данные
         request_data = {**data, 'report_type': report_type}
+        
+        # Проверяем, есть ли расширенные данные и отчет в Markdown
+        if "advanced_data" in data and "report_text" in data:
+            # Упрощаем запрос - отправляем только нужные данные и текст отчета
+            request_data = {
+                'report_type': report_type,
+                'report_text': data.get("report_text", ""),
+                'core_data': {
+                    'birthdate': data.get('birth_data', {}).get('date', ''),
+                    'fio': data.get('fio', ''),
+                    'life_path': data.get('life_path', 0),
+                    'expression': data.get('expression', 0),
+                    'soul_urge': data.get('soul_urge', 0),
+                    'personality': data.get('personality', 0)
+                }
+            }
         
         logger.info(f"Запрос интерпретации для отчета типа: {report_type}")
         
@@ -272,35 +223,36 @@ async def send_to_n8n_for_interpretation(data: Dict[str, Any], report_type: str)
         else:
             return {}
 
-# Оставьте существующую функцию generate_test_response как есть
+
 def generate_test_response(webhook_url: str, data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Генерирует тестовый ответ для различных типов запросов в режиме тестирования.
     
     Args:
-        webhook_url: URL вебхука n8n
+        webhook_url: URL вебхука n8n (не используется в новой версии)
         data: Словарь с данными для отправки
         
     Returns:
         Тестовый ответ в зависимости от типа запроса
     """
-    if "numerology-mini-report" in webhook_url:
-        life_path = data.get("life_path", 1)
-        expression = data.get("expression", 1)
-        return {
-            "interpretation": f"""
-Ваш мини-отчет (автономный режим):
+    report_type = data.get('report_type', 'unknown')
+    
+    if report_type == 'mini':
+        # Используем report_text, если он доступен
+        if "report_text" in data:
+            mini_report = f"""
+Краткий нумерологический анализ по корневой дате:
 
-Число жизненного пути: {life_path}
-Вы обладаете сильным потенциалом лидера и первооткрывателя. Ваша независимость и оригинальность мышления помогают находить необычные решения стандартных задач.
-
-Число выражения: {expression}
-Вы наделены творческим мышлением и умеете вдохновлять окружающих своим энтузиазмом. Ваша коммуникабельность помогает налаживать контакты в различных сферах.
+{data.get('report_text', '')}
 
 Для получения полного анализа рекомендуем заказать подробный PDF-отчет, содержащий более глубокую интерпретацию ваших нумерологических показателей и персональные рекомендации.
-            """,
-            "mini_report": f"""
-Ваш мини-отчет (автономный режим):
+            """
+        else:
+            # Иначе формируем отчет на основе базовых параметров
+            life_path = data.get("life_path", 1)
+            expression = data.get("expression", 1)
+            mini_report = f"""
+Ваш мини-отчет (тестовый режим):
 
 Число жизненного пути: {life_path}
 Вы обладаете сильным потенциалом лидера и первооткрывателя. Ваша независимость и оригинальность мышления помогают находить необычные решения стандартных задач.
@@ -310,57 +262,72 @@ def generate_test_response(webhook_url: str, data: Dict[str, Any]) -> Dict[str, 
 
 Для получения полного анализа рекомендуем заказать подробный PDF-отчет, содержащий более глубокую интерпретацию ваших нумерологических показателей и персональные рекомендации.
             """
-        }
-    
-    elif "numerology-full-report" in webhook_url:
-        life_path = data.get("life_path", 1)
-        expression = data.get("expression", 1)
-        soul_urge = data.get("soul_urge", 1)
-        personality = data.get("personality", 1)
         
         return {
-            "full_interpretation": {
-                "introduction": "Этот нумерологический отчет создан на основе ваших персональных данных и содержит глубокий анализ вашей личности, потенциала и жизненного пути.",
-                "life_path_interpretation": f"Число жизненного пути {life_path} указывает на вашу независимость и лидерские качества.",
-                "expression_interpretation": f"Число выражения {expression} раскрывает ваш творческий потенциал и ораторские способности.",
-                "soul_interpretation": f"Число души {soul_urge} показывает ваши внутренние мотивы и стремления.",
-                "personality_interpretation": f"Число личности {personality} отражает вашу внешнюю проекцию и то, как вас воспринимают окружающие.",
-                "life_path_detailed": f"Подробный анализ числа жизненного пути {life_path}: Вы обладаете выраженными лидерскими качествами и способностью вдохновлять других. Ваша энергия и решительность помогают преодолевать препятствия.",
-                "expression_detailed": f"Подробный анализ числа выражения {expression}: Вы имеете яркую индивидуальность и креативный подход к решению задач. Ваша коммуникабельность позволяет находить общий язык с разными людьми.",
-                "soul_detailed": f"Подробный анализ числа души {soul_urge}: Внутренне вы стремитесь к гармонии и балансу. Ваша интуиция помогает вам принимать верные решения в сложных ситуациях.",
-                "personality_detailed": f"Подробный анализ числа личности {personality}: Окружающие видят в вас надежного и ответственного человека. Вы умеете производить благоприятное первое впечатление.",
-                "forecast": "В ближайшее время вам предстоит период активного роста и развития. Рекомендуется обратить внимание на новые возможности в профессиональной сфере.",
-                "recommendations": "Развивайте свои коммуникативные навыки, они будут особенно полезны в ближайшем будущем. Уделите внимание духовному развитию и поиску внутреннего баланса."
-            },
-            "full_report": {
-                "introduction": "Этот нумерологический отчет создан на основе ваших персональных данных и содержит глубокий анализ вашей личности, потенциала и жизненного пути.",
-                "life_path_interpretation": f"Число жизненного пути {life_path} указывает на вашу независимость и лидерские качества.",
-                "expression_interpretation": f"Число выражения {expression} раскрывает ваш творческий потенциал и ораторские способности.",
-                "soul_interpretation": f"Число души {soul_urge} показывает ваши внутренние мотивы и стремления.",
-                "personality_interpretation": f"Число личности {personality} отражает вашу внешнюю проекцию и то, как вас воспринимают окружающие.",
-                "life_path_detailed": f"Подробный анализ числа жизненного пути {life_path}: Вы обладаете выраженными лидерскими качествами и способностью вдохновлять других. Ваша энергия и решительность помогают преодолевать препятствия.",
-                "expression_detailed": f"Подробный анализ числа выражения {expression}: Вы имеете яркую индивидуальность и креативный подход к решению задач. Ваша коммуникабельность позволяет находить общий язык с разными людьми.",
-                "soul_detailed": f"Подробный анализ числа души {soul_urge}: Внутренне вы стремитесь к гармонии и балансу. Ваша интуиция помогает вам принимать верные решения в сложных ситуациях.",
-                "personality_detailed": f"Подробный анализ числа личности {personality}: Окружающие видят в вас надежного и ответственного человека. Вы умеете производить благоприятное первое впечатление.",
-                "forecast": "В ближайшее время вам предстоит период активного роста и развития. Рекомендуется обратить внимание на новые возможности в профессиональной сфере.",
-                "recommendations": "Развивайте свои коммуникативные навыки, они будут особенно полезны в ближайшем будущем. Уделите внимание духовному развитию и поиску внутреннего баланса."
-            }
+            "mini_report": mini_report
         }
     
-    elif "numerology-compatibility" in webhook_url:
-        report_type = data.get("type", "mini")
-        compatibility_score = 75  # Тестовое значение
+    elif report_type == 'full':
+        # Используем report_text, если он доступен
+        if "report_text" in data:
+            interpretation_text = data.get('report_text', '')
+        else:
+            # Иначе формируем отчет на основе базовых параметров
+            life_path = data.get("life_path", 1)
+            expression = data.get("expression", 1)
+            soul_urge = data.get("soul_urge", 1)
+            personality = data.get("personality", 1)
+            
+            interpretation_text = f"""
+# Параметры по корневой дате
+## Параметры "Дт"
+### Аркан_Дт={life_path}
+### Процент_Дт={40.5}
+## Параметры "Мт"
+### Аркан_Мт={expression}
+### Процент_Мт={22.5}
+### Тип_Мт=Либеральный
+## Параметры "Гт"
+### Аркан_Гт={soul_urge}
+### Процент_Гт={36.0}
+## Параметры "МЧ"
+### Аркан_МЧ={personality}
+### Процент_МЧ={99.0}
+## Параметры "СТ"
+### Аркан_СТ=8
+            """
         
+        # Импортируем функцию парсинга из модуля numerology_core
+        from numerology_core import parse_text_to_full_report
+        
+        # Создаем структурированный ответ
+        full_report = parse_text_to_full_report(interpretation_text)
+        
+        return {
+            "full_report": full_report
+        }
+    
+    elif report_type in ['compatibility_mini', 'compatibility']:
         # Получаем информацию о людях, если она доступна
-        person1_name = data.get("person1", {}).get("fio", "Человек 1")
-        person2_name = data.get("person2", {}).get("fio", "Человек 2")
+        if "person1" in data and "person2" in data:
+            person1 = data.get("person1", {})
+            person2 = data.get("person2", {})
+            
+            person1_name = person1.get("fio", "Человек 1")
+            person2_name = person2.get("fio", "Человек 2")
+        else:
+            person1_name = "Человек 1"
+            person2_name = "Человек 2"
+        
+        compatibility_score = data.get("compatibility", {}).get("percent", 75)  # Берем процент из данных или 75% по умолчанию
 
-        if report_type == "mini":
+        if report_type == 'compatibility_mini':
             return {
                 "compatibility_mini_report": f"""
-Краткий анализ совместимости (автономный режим):
+Краткий анализ совместимости (тестовый режим):
 
-Общая совместимость: {compatibility_score}%
+Общая совместимость между {person1_name} и {person2_name}: {compatibility_score}%
+
 Ваша пара обладает хорошим потенциалом для гармоничных отношений. Вы дополняете друг друга в ключевых аспектах и имеете схожие ценности.
 
 Сильные стороны: взаимопонимание, поддержка, схожие цели.
@@ -370,27 +337,28 @@ def generate_test_response(webhook_url: str, data: Dict[str, Any]) -> Dict[str, 
                 """
             }
         else:
+            # Импортируем функцию парсинга из модуля numerology_core
+            from numerology_core import parse_text_to_compatibility_report
+            
+            compatibility_text = f"""# Анализ совместимости
+## Общие параметры
+### Совместимость_Общая={compatibility_score}%
+### Совместимость_Жизненные_Пути=70.5%
+### Совместимость_Эмоциональная=85.5%
+### Совместимость_Интеллектуальная=65.0%
+### Совместимость_Физическая=80.0%
+### Кармическая_Связь=Да"""
+            
+            compatibility_report = parse_text_to_compatibility_report(compatibility_text)
+            
             return {
-                "compatibility": {
-                    "intro": f"Этот отчет о совместимости основан на нумерологическом анализе {person1_name} и {person2_name}.",
-                    "score": compatibility_score,
-                    "strengths": "Ваша пара обладает сильными сторонами в области коммуникации и взаимной поддержки. Вы хорошо дополняете друг друга и имеете схожие ценности и жизненные цели.",
-                    "challenges": "Возможные трудности могут возникать в сфере распределения ответственности и принятия важных решений. Разные подходы к решению проблем могут создавать напряжение.",
-                    "recommendations": "Для укрепления отношений рекомендуется больше времени уделять совместным занятиям и открытому обсуждению ваших целей и ожиданий. Важно научиться уважать и принимать различия друг друга."
-                },
-                "compatibility_report": {
-                    "intro": f"Этот отчет о совместимости основан на нумерологическом анализе {person1_name} и {person2_name}.",
-                    "score": compatibility_score,
-                    "strengths": "Ваша пара обладает сильными сторонами в области коммуникации и взаимной поддержки. Вы хорошо дополняете друг друга и имеете схожие ценности и жизненные цели.",
-                    "challenges": "Возможные трудности могут возникать в сфере распределения ответственности и принятия важных решений. Разные подходы к решению проблем могут создавать напряжение.",
-                    "recommendations": "Для укрепления отношений рекомендуется больше времени уделять совместным занятиям и открытому обсуждению ваших целей и ожиданий. Важно научиться уважать и принимать различия друг друга."
-                }
+                "compatibility_report": compatibility_report
             }
     
-    elif "weekly-forecast" in webhook_url:
+    elif report_type == 'weekly':
         return {
-            "forecast": """
-Еженедельный прогноз (автономный режим):
+            "forecast": f"""
+Еженедельный прогноз (тестовый режим):
 
 Эта неделя будет благоприятна для новых начинаний и развития творческих проектов. Ваша энергия находится на высоком уровне, что позволит эффективно решать поставленные задачи.
 
@@ -402,4 +370,4 @@ def generate_test_response(webhook_url: str, data: Dict[str, Any]) -> Dict[str, 
         }
     
     # Если тип запроса не определен, возвращаем базовый ответ
-    return {"message": "Автономный ответ сгенерирован успешно"}
+    return {"message": "Автономный ответ сгенерирован успешно", "report_type": report_type}
