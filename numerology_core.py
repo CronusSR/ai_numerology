@@ -1,9 +1,8 @@
 # numerology_core.py - модуль для нумерологических расчетов
-import os
+from config import CALCULATIONS_DIR
 from datetime import datetime
 from typing import Dict, Any, List, Tuple, Optional
 
-CALCULATIONS_DIR = os.environ.get('CALCULATIONS_DIR', './calculations')
 
 # Функция для сохранения результатов расчетов в файл
 def save_calculation_to_file(birthdate: str, fio: str, calculation_data: Dict[str, Any]) -> str:

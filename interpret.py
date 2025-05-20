@@ -2,10 +2,19 @@
 import aiohttp
 import json
 import logging
-import os
 import traceback
 from typing import Dict, Any, Optional, Union
 from datetime import datetime
+
+import os  # оставьте если он нужен для других целей
+from config import (
+    TEST_MODE, 
+    USE_EXTERNAL_WEBHOOK, 
+    EXTERNAL_WEBHOOK_URL, 
+    N8N_BASE_URL, 
+    EXPECT_TEXT_RESPONSE,
+    N8N_LOGS_DIR
+)
 
 N8N_LOGS_DIR = os.getenv("N8N_LOGS_DIR", "./n8n_logs")
 
@@ -71,6 +80,7 @@ TEST_MODE = os.getenv("TEST_MODE", "true").lower() == "true"
 USE_EXTERNAL_WEBHOOK = os.getenv("USE_EXTERNAL_WEBHOOK", "true").lower() == "true"
 EXPECT_TEXT_RESPONSE = os.getenv("EXPECT_TEXT_RESPONSE", "true").lower() == "true"
 
+logger = logging.getLogger(__name__)
 logger.info(f"interpret.py: настройки модуля:")
 logger.info(f"N8N_BASE_URL: {N8N_BASE_URL}")
 logger.info(f"EXTERNAL_WEBHOOK_URL: {EXTERNAL_WEBHOOK_URL}")
