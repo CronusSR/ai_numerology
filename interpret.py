@@ -5,6 +5,7 @@ import logging
 import os
 import traceback
 from typing import Dict, Any, Optional, Union
+from datetime import datetime
 
 N8N_LOGS_DIR = os.getenv("N8N_LOGS_DIR", "./n8n_logs")
 
@@ -29,13 +30,13 @@ def save_n8n_exchange(data: Dict[str, Any], response: Dict[str, Any], report_typ
         os.makedirs(type_dir, exist_ok=True)
         
         # Формируем имя файла
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')  # Используем datetime.now()
         filename = f"{timestamp}_exchange.json"
         filepath = os.path.join(type_dir, filename)
         
         # Формируем данные для сохранения
         exchange_data = {
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now().isoformat(),  # Используем datetime.now()
             "report_type": report_type,
             "sent_data": data,
             "received_data": response,
