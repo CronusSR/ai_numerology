@@ -116,6 +116,9 @@ async def generate_weekly_forecast(user_data: Dict[str, Any]) -> Dict[str, Any]:
         # Расчет личного года
         personal_year = get_personal_year(birthdate)
         
+        # Дополнительные расчеты по новой логике
+        numerology_data = calculate_numerology(birthdate, fio)
+        
         # Формирование данных для отправки на интерпретацию
         forecast_data = {
             "user": {
@@ -127,7 +130,8 @@ async def generate_weekly_forecast(user_data: Dict[str, Any]) -> Dict[str, Any]:
                 "personal_year": personal_year,
                 "date_from": (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d"),
                 "date_to": (now + timedelta(days=6-now.weekday())).strftime("%Y-%m-%d")
-            }
+            },
+            "numerology": numerology_data  # Добавляем полные нумерологические данные
         }
         
         # Отправка данных на интерпретацию через n8n

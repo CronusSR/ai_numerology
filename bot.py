@@ -10,14 +10,13 @@ from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage  # Используем MemoryStorage вместо Redis
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     Message, InlineKeyboardButton, InlineKeyboardMarkup, PreCheckoutQuery,
     LabeledPrice, FSInputFile
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-# Импортируем необходимые модули
 try:
     from database_sqlite import Database  # Сначала пробуем импортировать SQLite версию
 except ImportError:
@@ -156,8 +155,16 @@ async def process_name(message: Message, state: FSMContext):
     # Отправка сообщения о начале расчета
     calculation_message = await message.answer("🔮 Выполняю нумерологические расчеты... Пожалуйста, подождите.")
     
-    # Выполнение нумерологических расчетов
+    # Выполнение нумерологических расчетов с обновленной логикой
     numerology_results = calculate_numerology(birthdate, fio)
+    
+    # Проверка на ошибки в расчетах
+    if "error" in numerology_results:
+        await bot.delete_message(chat_id=message.chat.id, message_id=calculation_message.message_id)
+        await message.answer(f"❌ Ошибка при расчетах: {numerology_results['error']}\nПожалуйста, проверьте введенные данные.")
+        # Устанавливаем состояние для повторного ввода даты рождения
+        await state.set_state(UserStates.waiting_for_birthdate)
+        return
     
     # Сохранение результатов в БД
     report_id = await db.save_report(message.from_user.id, "mini", numerology_results)
@@ -183,6 +190,73 @@ async def process_name(message: Message, state: FSMContext):
     
     await message.answer(
         f"🌟 <b>Ваш мини-отчет:</b>\n\n{mini_report_text}",
+        reply_markup=builder.as_markup()
+    )
+    
+    # Сброс состояния FSM
+    await state.clear()
+    
+@router.message(UserStates.waiting_for_partner_name)
+async def process_partner_name(message: Message, state: FSMContext):
+    # Сохранение ФИО партнера
+    await state.update_data(partner_fio=message.text)
+    
+    # Получение всех данных
+    data = await state.get_data()
+    user_birthdate = data.get("user_birthdate")
+    user_fio = data.get("user_fio")
+    partner_birthdate = data.get("partner_birthdate")
+    partner_fio = data.get("partner_fio")
+    
+    # Отправка сообщения о начале расчета
+    calculation_message = await message.answer("🔮 Выполняю расчет совместимости... Пожалуйста, подождите.")
+    
+    # Выполнение расчета совместимости с обновленной логикой
+    compatibility_results = calculate_compatibility(
+        user_birthdate, user_fio,
+        partner_birthdate, partner_fio
+    )
+    
+    # Проверка на ошибки в расчетах
+    if "error" in compatibility_results:
+        await bot.delete_message(chat_id=message.chat.id, message_id=calculation_message.message_id)
+        await message.answer(f"❌ Ошибка при расчете совместимости: {compatibility_results['error']}\nПожалуйста, проверьте введенные данные.")
+        # Устанавливаем состояние для повторного ввода даты рождения партнера
+        await state.set_state(UserStates.waiting_for_partner_birthdate)
+        return
+    
+    # Сохранение результатов в БД
+    report_id = await db.save_report(message.from_user.id, "compatibility_mini", compatibility_results)
+    
+    # Отправка результатов на интерпретацию через n8n
+    interpretation = await send_to_n8n_for_interpretation(compatibility_results, "compatibility_mini")
+    
+    # Удаление сообщения о расчетах
+    await bot.delete_message(chat_id=message.chat.id, message_id=calculation_message.message_id)
+    
+    # Формирование и отправка мини-отчета о совместимости
+    compatibility_score = compatibility_results.get("compatibility", {}).get("percent", 0)
+    
+    mini_report_text = interpretation.get(
+        'compatibility_mini_report', 
+        f"🌟 Ваша совместимость с {partner_fio}: {compatibility_score}%"
+    )
+    
+    builder = InlineKeyboardBuilder()
+    builder.add(InlineKeyboardButton(
+        text="📊 Полный отчет о совместимости - 199 ₽", 
+        callback_data=f"buy_compatibility:{report_id}"
+    ))
+    
+    # В тестовом режиме добавляем кнопку "Получить бесплатно (тестовый режим)"
+    if TEST_MODE:
+        builder.add(InlineKeyboardButton(
+            text="🔍 Получить бесплатно (тестовый режим)", 
+            callback_data=f"test_compatibility:{report_id}"
+        ))
+    
+    await message.answer(
+        f"{mini_report_text}",
         reply_markup=builder.as_markup()
     )
     
@@ -223,8 +297,8 @@ async def process_test_full_report(callback_query: types.CallbackQuery):
     # Отправка запроса на интерпретацию для полного отчета
     interpretation = await send_to_n8n_for_interpretation(report["core_json"], "full")
     
-    # Генерация PDF
-    pdf_path = generate_pdf(user, report["core_json"], interpretation.get("full_report", {}))
+    # Генерация PDF с обновленными данными
+    pdf_path = generate_pdf(user, report["core_json"], interpretation)
     
     # Удаление сообщения о ожидании
     await bot.delete_message(chat_id=callback_query.message.chat.id, message_id=wait_message.message_id)
@@ -240,7 +314,7 @@ async def process_test_full_report(callback_query: types.CallbackQuery):
     await callback_query.message.answer("✅ Ваш полный отчет готов (тестовый режим).")
     
     try:
-        # Скачивание PDF и отправка пользователю
+        # Отправка PDF пользователю
         pdf_file = FSInputFile(pdf_path, filename="numerology_report.pdf")
         await bot.send_document(callback_query.message.chat.id, pdf_file)
         
@@ -264,6 +338,62 @@ async def process_test_full_report(callback_query: types.CallbackQuery):
         logger.error(f"Ошибка при отправке PDF: {e}")
         await callback_query.message.answer(f"❌ Произошла ошибка при отправке PDF: {e}")
 
+@router.callback_query(F.data.startswith("test_compatibility:"))
+async def process_test_compatibility(callback_query: types.CallbackQuery):
+    if not TEST_MODE:
+        await callback_query.answer("⚠️ Тестовый режим отключен")
+        return
+        
+    # Подтверждение запроса
+    await callback_query.answer()
+    
+    # Получение ID отчета из callback_data
+    report_id = int(callback_query.data.split(":")[1])
+    
+    # Получение отчета
+    report = await db.get_report(report_id)
+    
+    if not report:
+        await callback_query.message.answer("❌ Отчет не найден. Пожалуйста, создайте новый расчет.")
+        return
+        
+    # Получение данных пользователя
+    user_id = report["user_id"]
+    user = await db.get_user_by_id(user_id)
+    
+    if not user:
+        await callback_query.message.answer("❌ Произошла ошибка: пользователь не найден.")
+        return
+    
+    # Временно помечаем пользователя о генерации отчета
+    wait_message = await callback_query.message.answer("⏳ Генерация отчета о совместимости... Пожалуйста, подождите.")
+    
+    # Отправка запроса на интерпретацию для полного отчета о совместимости
+    interpretation = await send_to_n8n_for_interpretation(report["core_json"], "compatibility")
+    
+    # Генерация PDF с обновленными данными
+    pdf_path = generate_pdf(user, report["core_json"], interpretation, "compatibility")
+    
+    # Удаление сообщения о ожидании
+    await bot.delete_message(chat_id=callback_query.message.chat.id, message_id=wait_message.message_id)
+    
+    if not pdf_path:
+        await callback_query.message.answer("❌ Произошла ошибка при генерации PDF. Пожалуйста, попробуйте позже.")
+        return
+        
+    # Обновление URL PDF в БД
+    await db.update_report_pdf(report_id, pdf_path)
+    
+    # Отправка PDF пользователю
+    await callback_query.message.answer("✅ Ваш отчет о совместимости готов (тестовый режим).")
+    
+    try:
+        # Отправка PDF пользователю
+        pdf_file = FSInputFile(pdf_path, filename="compatibility_report.pdf")
+        await bot.send_document(callback_query.message.chat.id, pdf_file)
+    except Exception as e:
+        logger.error(f"Ошибка при отправке PDF: {e}")
+        await callback_query.message.answer(f"❌ Произошла ошибка при отправке PDF: {e}")
 # Обработчик кнопки "Активировать бесплатно (тестовый режим)" для подписки
 @router.callback_query(F.data == "test_subscribe")
 async def process_test_subscription(callback_query: types.CallbackQuery):
