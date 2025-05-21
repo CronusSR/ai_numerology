@@ -11,6 +11,14 @@ class Database:
         self.db_file = "numerology_bot.db"
         self.connection = None
         
+        async def close(self):
+            """Закрывает соединение с базой данных"""
+            if self.connection:
+                self.connection.close()
+                self.connection = None
+            return True
+        return False
+        
     async def init(self):
         """Инициализация соединения с базой данных"""
         # SQLite подключение (синхронное, но мы обернем его в асинхронные функции)
